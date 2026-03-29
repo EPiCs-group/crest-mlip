@@ -145,7 +145,7 @@ contains !> MODULE PROCEDURES START HERE
     end if
 
 !>--- constrain all X-H only
-    if (shk%shake_mode == 1) then
+100 if (shk%shake_mode == 1) then
       ij = nat*(nat+1)/2
       allocate (cons2(2,ij),source=0)
       do i = 1,nat
@@ -230,9 +230,15 @@ contains !> MODULE PROCEDURES START HERE
         end do
         deallocate (list)
       else
-        write (*,*) 'No bonding information provided!'
-        write (*,*) 'Automatic SHAKE setup failed.'
-        error stop
+        !>--- No WBO matrix available for all-bond SHAKE (mode 2).
+        !>    This happens when: (a) the MLIP calculator doesn't provide WBOs,
+        !>    AND (b) the GFN-FF topology WBO fallback in trialMD_calculator()
+        !>    also failed.  Gracefully degrade to mode 1 (X-H bonds only),
+        !>    which needs no WBOs — just finds each H's nearest neighbor.
+        write (*,*) 'No bonding information (WBO) available.'
+        write (*,*) 'Falling back to SHAKE mode 1 (X-H bonds only).'
+        shk%shake_mode = 1
+        goto 100
       end if
     end if
 

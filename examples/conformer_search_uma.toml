@@ -1,0 +1,9 @@
+# Conformer search using Meta's UMA (Universal MLIP Accelerator).
+# Usage: crest molecule.xyz --input conformer_search_uma.toml
+
+runtype = "imtd-gc"
+threads = 16
+
+[[calculation.level]]
+method = "uma"
+device = "cuda"

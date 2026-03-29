@@ -114,6 +114,39 @@ if(NOT TARGET "lwoniom::lwoniom" AND WITH_LWONIOM)
    add_compile_definitions(WITH_LWONIOM)
 endif()
 
+# libtorch direct MLIP inference
+if(WITH_LIBTORCH)
+   enable_language(CXX)
+   set(CMAKE_CXX_STANDARD 17)
+   set(CMAKE_CXX_STANDARD_REQUIRED ON)
+   find_package(Torch REQUIRED)
+   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
+   add_compile_definitions(WITH_LIBTORCH)
+endif()
+
+# Embedded Python MLIP inference
+if(WITH_PYMLIP)
+   find_package(Python3 REQUIRED COMPONENTS Development)
+   add_compile_definitions(WITH_PYMLIP)
+   message(STATUS "PyMLIP: Python ${Python3_VERSION} at ${Python3_EXECUTABLE}")
+   # Check for UMA backend (fairchem-core)
+   execute_process(COMMAND ${Python3_EXECUTABLE} -c "import fairchem"
+     RESULT_VARIABLE _fairchem_check OUTPUT_QUIET ERROR_QUIET)
+   if(NOT _fairchem_check EQUAL 0)
+     message(WARNING "fairchem-core not found in ${Python3_EXECUTABLE} — UMA models will fail at runtime. Install: pip install fairchem-core huggingface_hub")
+   else()
+     message(STATUS "  fairchem-core: found (UMA ready)")
+   endif()
+   # Check for MACE backend (mace-torch)
+   execute_process(COMMAND ${Python3_EXECUTABLE} -c "import mace"
+     RESULT_VARIABLE _mace_check OUTPUT_QUIET ERROR_QUIET)
+   if(NOT _mace_check EQUAL 0)
+     message(WARNING "mace-torch not found in ${Python3_EXECUTABLE} — MACE models will fail at runtime. Install: pip install mace-torch")
+   else()
+     message(STATUS "  mace-torch: found (MACE ready)")
+   endif()
+endif()
+
 # Sources: initialize program sources (prog) and library sources (srcs) empty
 set(prog)
 set(srcs)
@@ -154,6 +187,8 @@ if(WITH_OBJECT AND NOT STATICBUILD)
       $<$<BOOL:${WITH_TOMLF}>:toml-f::toml-f>
       $<$<BOOL:${WITH_LWONIOM}>:lwoniom::lwoniom>
       $<$<BOOL:${WITH_OpenMP}>:OpenMP::OpenMP_Fortran>
+      $<$<BOOL:${WITH_LIBTORCH}>:${TORCH_LIBRARIES}>
+      $<$<BOOL:${WITH_PYMLIP}>:Python3::Python>
    )
 
    # include directories
@@ -204,6 +239,8 @@ target_link_libraries(
    $<$<BOOL:${WITH_LIBPVOL}>:pvol::pvol>
    $<$<BOOL:${WITH_TOMLF}>:toml-f::toml-f>
    $<$<BOOL:${WITH_LWONIOM}>:lwoniom::lwoniom>
+   $<$<BOOL:${WITH_LIBTORCH}>:${TORCH_LIBRARIES}>
+   $<$<BOOL:${WITH_PYMLIP}>:Python3::Python>
    $<$<BOOL:${STATICBUILD}>:-static>
 )
 
@@ -249,6 +286,8 @@ if (WITH_OBJECT AND NOT STATICBUILD)
       $<$<BOOL:${WITH_LIBPVOL}>:pvol::pvol>
       $<$<BOOL:${WITH_TOMLF}>:toml-f::toml-f>
       $<$<BOOL:${WITH_LWONIOM}>:lwoniom::lwoniom>
+      $<$<BOOL:${WITH_LIBTORCH}>:${TORCH_LIBRARIES}>
+      $<$<BOOL:${WITH_PYMLIP}>:Python3::Python>
    )
 
    set_target_properties(

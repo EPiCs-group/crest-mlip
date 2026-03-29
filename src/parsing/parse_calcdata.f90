@@ -90,7 +90,9 @@ contains !> MODULE PROCEDURES START HERE
     included = .false.
     call calc%reset()
     call env%ref%to(moltmp)
-    call axis(moltmp%nat,moltmp%at,moltmp%xyz)
+    if (moltmp%nat > 0 .and. allocated(moltmp%at)) then
+      call axis(moltmp%nat,moltmp%at,moltmp%xyz)
+    end if
 
     do i = 1,dict%nblk
       call blk%deallocate()
@@ -205,6 +207,8 @@ contains !> MODULE PROCEDURES START HERE
       job%vdwset = kv%value_i
     case ('config')
       call job%addconfig(kv%value_ia)
+    case ('libtorch_device')
+      job%libtorch_device_id = kv%value_i
 
 !>--- strings
     case ('method')
@@ -250,6 +254,23 @@ contains !> MODULE PROCEDURES START HERE
         job%id = jobtype%unknown
       case ('lj','lennard-jones')
         job%id = jobtype%lj
+      !>--- MLIP backends (Machine Learning Interatomic Potentials)
+      !>    'libtorch'   → direct C++ TorchScript inference (fastest on GPU)
+      !>    'pymlip'     → embedded Python inference (UMA or MACE)
+      !>    'uma'/'mace' → shorthand aliases that auto-set pymlip_model_type
+      !>    'ase-socket'  → external ASE calculator via TCP socket
+      case ('libtorch','mace-direct')
+        job%id = jobtype%libtorch
+      case ('pymlip','mlip-embed','embed-mlip')
+        job%id = jobtype%pymlip
+      case ('uma','uma-direct')
+        job%id = jobtype%pymlip
+        job%pymlip_model_type = 'uma'
+      case ('mace')
+        job%id = jobtype%pymlip
+        job%pymlip_model_type = 'mace'
+      case ('ase-socket','socket','ext-socket')
+        job%id = jobtype%ase_socket
       case default
         job%id = jobtype%unknown
         !>--- keyword was recognized, but invalid argument supplied
@@ -266,6 +287,112 @@ contains !> MODULE PROCEDURES START HERE
       !> don't.
       !case ('sys','syscall','systemcall')
       !  job%systemcall = val
+
+    !>=== MLIP configuration keys ==========================================
+    !> These keys configure the three MLIP backends (libtorch, pymlip,
+    !> ase_socket).  Some keys (model_path, device) are shared across
+    !> backends; others are backend-specific.
+
+    case ('model_path','libtorch_model')
+      !> Path to model checkpoint — used by both libtorch (.pt TorchScript)
+      !> and pymlip (.pt checkpoint).  Set both so backend can be switched.
+      job%libtorch_model_path = kv%value_c
+      job%pymlip_model_path = kv%value_c
+
+    case ('device')
+      !> Compute device for inference.  Device codes for libtorch:
+      !>   0=CPU, 1=CUDA (auto GPU 0), 2=MPS (Apple Silicon)
+      !>   10-13=CUDA:0 through CUDA:3 (explicit GPU selection)
+      !> For pymlip, device is stored as a string ('cpu','cuda','mps').
+      select case (kv%value_c)
+      case ('cpu')
+        job%libtorch_device_id = 0
+        job%pymlip_device = 'cpu'
+      case ('cuda')
+        job%libtorch_device_id = 1
+        job%pymlip_device = 'cuda'
+      case ('cuda:0')
+        job%libtorch_device_id = 10
+        job%pymlip_device = 'cuda'
+      case ('cuda:1')
+        job%libtorch_device_id = 11
+        job%pymlip_device = 'cuda'
+      case ('cuda:2')
+        job%libtorch_device_id = 12
+        job%pymlip_device = 'cuda'
+      case ('cuda:3')
+        job%libtorch_device_id = 13
+        job%pymlip_device = 'cuda'
+      case ('mps')
+        job%libtorch_device_id = 2
+        job%pymlip_device = 'mps'
+      end select
+
+    case ('model_type','pymlip_type')
+      !> PyMLIP model family: 'uma' (fairchem UMA) or 'mace' (mace-torch)
+      job%pymlip_model_type = kv%value_c
+
+    case ('model_format','libtorch_format')
+      !> TorchScript model output format:
+      !>   'generic' (0): returns (energy, forces) tuple
+      !>   'mace'    (1): returns dict with 'energy','forces' keys (MACE LAMMPS export)
+      select case (kv%value_c)
+      case ('generic','tuple')
+        job%libtorch_model_format = 0
+      case ('mace','mace-lammps','lammps')
+        job%libtorch_model_format = 1
+      end select
+
+    case ('cutoff')
+      !> Neighbor list cutoff in Angstrom (libtorch only).  Must match the
+      !> cutoff used during model training.  Default 6.0 for MACE models.
+      job%libtorch_cutoff = kv%value_f
+
+    case ('task')
+      !> UMA task string (pymlip only), e.g. 's2ef' for structure-to-energy-forces
+      job%pymlip_task = kv%value_c
+
+    case ('atom_refs','atom_references')
+      !> Per-element energy references YAML file (pymlip only).
+      !> Subtracted from total energy to improve prediction accuracy.
+      job%pymlip_atom_refs = kv%value_c
+
+    case ('compile_mode','torch_compile')
+      !> torch.compile optimization mode (pymlip only):
+      !>   '' = disabled, 'reduce-overhead', 'max-autotune'
+      !> Adds startup cost but speeds up repeated inference.
+      job%pymlip_compile_mode = kv%value_c
+
+    case ('dtype','default_dtype')
+      !> Floating point precision for MACE inference: 'float64' or 'float32'
+      job%pymlip_dtype = kv%value_c
+
+    case ('aten_threads','mlip_aten_threads')
+      !> ATen (PyTorch internal) thread count.  0=auto (T for CPU, 1 for GPU).
+      !> Overrides the automatic setting in parallel.f90.
+      job%mlip_aten_threads = kv%value_i
+
+    case ('batch_size','mlip_batch_size')
+      !> Structures per GPU batch.  0=auto (64 for small, 16 medium, 4 large).
+      !> Only used in GPU batched path (parallel.f90).
+      job%mlip_batch_size = kv%value_i
+
+    case ('shared_model')
+      !> Share a single libtorch model across all OpenMP threads (GPU mode).
+      !> Reduces GPU memory but serializes forward passes via mutex.
+      job%libtorch_shared_model = kv%value_b
+
+    case ('ngpus','num_gpus')
+      !> Number of GPUs for multi-GPU batched inference.  0=auto-detect (cap 2).
+      job%mlip_ngpus = kv%value_i
+
+    case ('host','socket_host')
+      !> Hostname for ASE socket server (default: 127.0.0.1)
+      job%socket_host = kv%value_c
+
+    case ('port','socket_port')
+      !> TCP port for ASE socket server (default: 6789)
+      job%socket_port = kv%value_i
 
     case ('calcspace','dir')
       job%calcspace = kv%value_c
@@ -450,6 +577,14 @@ contains !> MODULE PROCEDURES START HERE
       job%apiclean = kv%value_b
     case ('lmo','lmocent')
       job%getlmocent = kv%value_b
+    case ('libtorch_debug')
+      job%libtorch_debug = kv%value_b
+    case ('pymlip_debug')
+      job%pymlip_debug = kv%value_b
+    case ('turbo','inference_turbo')
+      job%pymlip_turbo = kv%value_b
+    case ('socket_debug')
+      job%socket_debug = kv%value_b
 
     case default
       !>--- keyword not correctly read/found

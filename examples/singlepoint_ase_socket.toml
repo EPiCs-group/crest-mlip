@@ -1,0 +1,10 @@
+# Single-point energy via ASE socket interface.
+# Start the server first: python src/python_server/crest_ase_server.py
+# Usage: crest molecule.xyz --input singlepoint_ase_socket.toml
+
+runtype = "sp"
+
+[[calculation.level]]
+method = "ase-socket"
+host   = "127.0.0.1"
+port   = 6789

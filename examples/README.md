@@ -1,34 +1,21 @@
-# Example applications of the CREST program
+# CREST-UMA Examples
 
-This directory contains several examples for 
-standard applications of the `crest` program.
+Example TOML input files for MLIP-powered calculations with CREST.
 
-Each example directory contains a input structure
-(typically called `struc.xyz`) and a bash script
-called `run.sh` that includes some information about
-the example and will execute the calculation upon
-execution.
+| File | Backend | Description |
+|------|---------|-------------|
+| `conformer_search_uma.toml` | pymlip (UMA) | GPU conformer search with Meta's UMA |
+| `conformer_search_mace_libtorch.toml` | libtorch | GPU conformer search with MACE TorchScript |
+| `optimization_mace_pymlip.toml` | pymlip (MACE) | Geometry optimization with MACE via embedded Python |
+| `singlepoint_ase_socket.toml` | ASE socket | Single-point energy via TCP socket to ASE server |
+| `ethane.xyz` | — | Simple test structure (8 atoms) |
 
-To run the example scripts simply go to the respective
-directory and execute it from the command line:
+## Usage
+
 ```bash
-./run.sh
+crest examples/ethane.xyz --input examples/conformer_search_uma.toml
 ```
 
-It is assumed that the `xtb` and `crest` binaries
-are present in the *PATH* variable as such.
-The `run.sh` scripts will check for this, however.
-
-
-## Examples
-
-0. *dry run* of the `crest` program
-1. default conformational search (iMTD-GC)
-2. example for different CMD settings
-3. sorting an ensemble file (CREGEN)
-4. constrained conformational sampling
-5. standalone optimization along a trajectory
-6. NCI sampling mode (iMTD-NCI)
-7. protonation site sampling
-8. modified protonation site sampling
-9. tautomer sampling
+All paths in the TOML files are relative. Adjust `model_path` to point to your
+downloaded model checkpoint. See the main README for build instructions and the
+full TOML keyword reference.

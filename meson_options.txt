@@ -73,3 +73,17 @@ option(
   description: 'build with lwONIOM integration',
 )
 
+option(
+  'WITH_LIBTORCH',
+  type: 'boolean',
+  value: false,
+  description: 'build with direct libtorch MLIP inference',
+)
+
+option(
+  'WITH_PYMLIP',
+  type: 'boolean',
+  value: false,
+  description: 'build with embedded Python MLIP inference',
+)
+

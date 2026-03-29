@@ -120,6 +120,19 @@ subroutine crest_singlepoint(env,tim)
   end if
 
   deallocate (grad)
+!>--- MLIP cleanup: release GPU memory, close sockets, free Python objects.
+!>    Idempotent — safe to call even if backend was never initialized.
+  do j = 1, calc%ncalculations
+    if (calc%calcs(j)%id == jobtype%libtorch) then
+      call libtorch_cleanup(calc%calcs(j))
+    end if
+    if (calc%calcs(j)%id == jobtype%pymlip) then
+      call pymlip_cleanup(calc%calcs(j))
+    end if
+    if (calc%calcs(j)%id == jobtype%ase_socket) then
+      call ase_socket_cleanup(calc%calcs(j))
+    end if
+  end do
 !========================================================================================!
   return
 end subroutine crest_singlepoint
@@ -127,7 +140,7 @@ end subroutine crest_singlepoint
 !========================================================================================!
 !========================================================================================!
 
-subroutine crest_xtbsp(env,xtblevel,molin)
+subroutine crest_xtbsp(env,xtblevel,molin,iostat)
 !********************************************************************
 !* Replacement for the legacy xtbsp routine, makes use of gfn0 or tblite.
 !* The purpose of this routine is usually to generate WBOs
@@ -136,6 +149,7 @@ subroutine crest_xtbsp(env,xtblevel,molin)
 !*  env      - crest's systemdata object
 !*  xtblevel - quick selection of calc. level
 !*  molin    - molecule data
+!*  iostat   - optional error return (if present, do not abort on failure)
 !********************************************************************
   use crest_parameters
   use crest_data
@@ -147,6 +161,7 @@ subroutine crest_xtbsp(env,xtblevel,molin)
   type(systemdata) :: env
   integer,intent(in),optional :: xtblevel
   type(coord),intent(in),optional :: molin
+  integer,intent(out),optional :: iostat
   !> LOCAL
   integer :: lv,io
   type(calcdata) :: tmpcalc
@@ -183,9 +198,17 @@ subroutine crest_xtbsp(env,xtblevel,molin)
 !>>>>>>>>>>>>>>>>>>>>>>><<<<<<<<<<<<<<<<<<<<<!
 !>>>>>>>>>>>>>>>>>>>>>>><<<<<<<<<<<<<<<<<<<<<!
   if (io .ne. 0) then
+    if (present(iostat)) then
+      iostat = io
+      deallocate (grad)
+      call tmpcalc%reset()
+      call mol%deallocate()
+      return
+    end if
     write(stdout,'(a)') 'crest_xtbsp() failed'
     call creststop(status_error)
   end if
+  if (present(iostat)) iostat = 0
 
 !>--- write wbo file
   if (tmpcalc%calcs(1)%rdwbo) then

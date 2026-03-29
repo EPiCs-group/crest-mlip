@@ -41,11 +41,12 @@ subroutine trialMD_calculator(env)
   use dynamics_module
   use strucrd
   use iomod
+  use gfnff_api,only: gfnff_get_topology_wbos
   implicit none
 
   type(systemdata) :: env    ! MAIN STORAGE OS SYSTEM DATA
 
-  integer :: io,Vdumpfreq,counter
+  integer :: io,j,Vdumpfreq,counter
   real(wp) :: prefac,alpha,length
   real(wp) :: rtime,tstep
   integer :: shakemode,maxiter
@@ -85,18 +86,48 @@ subroutine trialMD_calculator(env)
   MDSTART%length_steps = 0    !> to zero so it will be calculated automatically
   MDSTART%dumpstep = 20.0_wp  !> fs dump step to trajectory file, so we end up with 50 structures
   MDSTART%sdump = 0           !> also zero to reset
-  if (allocated(env%ref%wbo)) then  !> should be allocated from main program
+!>--- Obtain WBOs for SHAKE bond constraints.
+!>    SHAKE mode 2 (all-bond) needs a WBO matrix to identify bonded pairs.
+!>    Priority: (1) already computed by md_length_setup() via GFN2-xTB,
+!>              (2) GFN-FF topology (binary 0/1, fast, no singlepoint),
+!>              (3) main calculator engrad (last resort).
+  if (allocated(env%ref%wbo)) then
+    !> WBOs already available (e.g. from GFN2-xTB in md_length_setup)
     MDSTART%shk%wbo = env%ref%wbo
-  else !> otherwise, obtain from scratch
-    tmpcalc = env%calc
-    mol = molstart
-    tmpcalc%calcs(1)%rdwbo = .true. !> obtain WBOs
-    allocate(grd(3,mol%nat))
-    call engrad(mol,tmpcalc,energy,grd,io)
-    call move_alloc(tmpcalc%calcs(1)%wbo, env%ref%wbo)
-    deallocate(grd)
-    call tmpcalc%reset()
-    MDSTART%shk%wbo = env%ref%wbo
+  else
+    !> Try GFN-FF topology WBOs — lightweight, no singlepoint needed.
+    !> Binary (0/1) WBOs are sufficient for SHAKE (threshold > 0.5).
+    call gfnff_get_topology_wbos(molstart,env%chrg,env%ref%wbo,io)
+    if (io == 0 .and. allocated(env%ref%wbo)) then
+      MDSTART%shk%wbo = env%ref%wbo
+    else
+      !> Last resort: run engrad with main calculator to try to get WBOs.
+      !> This works for xTB-based calculators but typically returns nothing
+      !> for MLIP calculators (they don't compute WBOs).
+      tmpcalc = env%calc
+      mol = molstart
+      tmpcalc%calcs(1)%rdwbo = .true.
+      allocate(grd(3,mol%nat))
+      call engrad(mol,tmpcalc,energy,grd,io)
+      !> Close MLIP sockets/processes opened by engrad
+      do j = 1, tmpcalc%ncalculations
+        if (tmpcalc%calcs(j)%id == jobtype%libtorch) then
+          call libtorch_cleanup(tmpcalc%calcs(j))
+        end if
+        if (tmpcalc%calcs(j)%id == jobtype%pymlip) then
+          call pymlip_cleanup(tmpcalc%calcs(j))
+        end if
+        if (tmpcalc%calcs(j)%id == jobtype%ase_socket) then
+          call ase_socket_cleanup(tmpcalc%calcs(j))
+        end if
+      end do
+      if (allocated(tmpcalc%calcs(1)%wbo)) then
+        call move_alloc(tmpcalc%calcs(1)%wbo, env%ref%wbo)
+        MDSTART%shk%wbo = env%ref%wbo
+      end if
+      deallocate(grd)
+      call tmpcalc%reset()
+    end if
   end if
   !MDSTART%printstep = 10
 
@@ -140,6 +171,19 @@ subroutine trialMD_calculator(env)
     call dynamics(mol,MD,env%calc,pr,io)
     call profiler%stop(counter)
     !================================!
+    !>--- MLIP cleanup after each trial MD iteration (release GPU/sockets
+    !>    so the next iteration can reinitialize cleanly)
+    do j = 1, env%calc%ncalculations
+      if (env%calc%calcs(j)%id == jobtype%libtorch) then
+        call libtorch_cleanup(env%calc%calcs(j))
+      end if
+      if (env%calc%calcs(j)%id == jobtype%pymlip) then
+        call pymlip_cleanup(env%calc%calcs(j))
+      end if
+      if (env%calc%calcs(j)%id == jobtype%ase_socket) then
+        call ase_socket_cleanup(env%calc%calcs(j))
+      end if
+    end do
 
     if (io == 0) then
       write (atmp,'(1x,"Trial MTD ",i0," runtime (",f3.1," ps)")') counter,MD%length_ps
@@ -187,6 +231,21 @@ subroutine trialMD_calculator(env)
   env%shake = shakemode
   env%mddat%shk%shake_mode = shakemode
   env%mddat%shake = (shakemode > 0)
+
+!>--- MLIP cleanup: release the calcstart copy's handles (these are
+!>    duplicates created by "calcstart = env%calc" and must be freed
+!>    independently from env%calc's handles)
+  do j = 1, calcstart%ncalculations
+    if (calcstart%calcs(j)%id == jobtype%libtorch) then
+      call libtorch_cleanup(calcstart%calcs(j))
+    end if
+    if (calcstart%calcs(j)%id == jobtype%pymlip) then
+      call pymlip_cleanup(calcstart%calcs(j))
+    end if
+    if (calcstart%calcs(j)%id == jobtype%ase_socket) then
+      call ase_socket_cleanup(calcstart%calcs(j))
+    end if
+  end do
 
 !>--- If we succeded and exited the above loop, estimate runtime for multiple MTDs
   rtime = profiler%get(counter)
@@ -287,7 +346,7 @@ subroutine trialOPT_calculator(env)
   !> LOCAL
   type(coord) :: mol,molopt
   type(calcdata) :: tmpcalc
-  integer :: io,T,Tn
+  integer :: i,io,T,Tn
   real(wp) :: energy
   real(wp),allocatable :: grd(:,:)
   logical :: success,pr,wr
@@ -314,16 +373,29 @@ subroutine trialOPT_calculator(env)
   endif 
   call optimize_geometry(mol,molopt,tmpcalc,energy,grd,pr,wr,io)
 
-!>--- check success 
+!>--- MLIP cleanup after trialOPT (release GPU/sockets for next step)
+  do i = 1, tmpcalc%ncalculations
+    if (tmpcalc%calcs(i)%id == jobtype%libtorch) then
+      call libtorch_cleanup(tmpcalc%calcs(i))
+    end if
+    if (tmpcalc%calcs(i)%id == jobtype%pymlip) then
+      call pymlip_cleanup(tmpcalc%calcs(i))
+    end if
+    if (tmpcalc%calcs(i)%id == jobtype%ase_socket) then
+      call ase_socket_cleanup(tmpcalc%calcs(i))
+    end if
+  end do
+
+!>--- check success
   success = (io == 0)
   call trialOPT_warning(env,molopt,success)
 !>--- if the checks were successfull, env%ref is overwritten
   env%ref%nat = molopt%nat
   env%ref%at = molopt%at
   env%ref%xyz = molopt%xyz
-  env%ref%etot = energy  
+  env%ref%etot = energy
 
-  deallocate(grd) 
+  deallocate(grd)
 end subroutine trialOPT_calculator
 
 !========================================================================================!

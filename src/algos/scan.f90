@@ -89,6 +89,30 @@ subroutine crest_scan(env,tim)
   !close(calcclean%eout_unit) 
 
   deallocate (grad)
+!>--- MLIP cleanup: release GPU memory, close sockets, free Python objects.
+!>    Idempotent — safe to call even if backend was never initialized.
+  do j = 1, calc%ncalculations
+    if (calc%calcs(j)%id == jobtype%libtorch) then
+      call libtorch_cleanup(calc%calcs(j))
+    end if
+    if (calc%calcs(j)%id == jobtype%pymlip) then
+      call pymlip_cleanup(calc%calcs(j))
+    end if
+    if (calc%calcs(j)%id == jobtype%ase_socket) then
+      call ase_socket_cleanup(calc%calcs(j))
+    end if
+  end do
+  do j = 1, calcclean%ncalculations
+    if (calcclean%calcs(j)%id == jobtype%libtorch) then
+      call libtorch_cleanup(calcclean%calcs(j))
+    end if
+    if (calcclean%calcs(j)%id == jobtype%pymlip) then
+      call pymlip_cleanup(calcclean%calcs(j))
+    end if
+    if (calcclean%calcs(j)%id == jobtype%ase_socket) then
+      call ase_socket_cleanup(calcclean%calcs(j))
+    end if
+  end do
 !========================================================================================!
   call tim%stop(14)
   return

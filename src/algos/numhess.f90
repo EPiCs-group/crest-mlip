@@ -258,6 +258,19 @@ subroutine crest_numhess(env,tim)
   if (allocated(freq)) deallocate (freq)
   if (allocated(ohess)) deallocate (ohess)
   if (allocated(ofreq)) deallocate (ofreq)
+!>--- MLIP cleanup: release GPU memory, close sockets, free Python objects.
+!>    Idempotent — safe to call even if backend was never initialized.
+  do j = 1, calc%ncalculations
+    if (calc%calcs(j)%id == jobtype%libtorch) then
+      call libtorch_cleanup(calc%calcs(j))
+    end if
+    if (calc%calcs(j)%id == jobtype%pymlip) then
+      call pymlip_cleanup(calc%calcs(j))
+    end if
+    if (calc%calcs(j)%id == jobtype%ase_socket) then
+      call ase_socket_cleanup(calc%calcs(j))
+    end if
+  end do
 !========================================================================================!
   call tim%stop(15)
 

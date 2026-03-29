@@ -56,6 +56,7 @@ end subroutine rmrfw
 subroutine custom_cleanup(env)
    use crest_data
    use iomod
+   use crest_calculator, only: pymlip_finalize
    implicit none
    type(systemdata) :: env
    integer :: i
@@ -79,6 +80,11 @@ subroutine custom_cleanup(env)
    endif
    call rmrf('.CHRG .UHF')
    call rmrf('.history.xyz')
+   !> Shut down the embedded Python interpreter (pymlip backend).
+   !> Called once at program exit, after all per-calculator cleanup is done.
+   !> Idempotent — safe to call even if Python was never initialized.
+   !> This releases all remaining Python objects and frees the GIL.
+   call pymlip_finalize()
 end subroutine custom_cleanup
 
 

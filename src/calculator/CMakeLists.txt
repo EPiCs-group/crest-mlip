@@ -16,9 +16,28 @@
 
 set(dir "${CMAKE_CURRENT_SOURCE_DIR}")
 
+if(WITH_LIBTORCH)
+  list(APPEND srcs
+    "${dir}/libtorch_bridge.cpp"
+  )
+endif()
+
+if(WITH_PYMLIP)
+  list(APPEND srcs
+    "${dir}/pymlip_bridge.c"
+  )
+endif()
+
 list(APPEND srcs
-  "${dir}/calculator.F90"
+  "${dir}/ase_socket_bridge.c"
+)
+
+list(APPEND srcs
   "${dir}/calc_type.f90"
+  "${dir}/calculator_libtorch.F90"
+  "${dir}/calculator_pymlip.F90"
+  "${dir}/calculator_ase_socket.F90"
+  "${dir}/calculator.F90"
   "${dir}/printouts.F90"
   "${dir}/constraints.f90"
   "${dir}/gfn0_api.F90"
@@ -41,7 +60,6 @@ list(APPEND srcs
 )
 
 set(srcs ${srcs} PARENT_SCOPE)
-
 
 
 

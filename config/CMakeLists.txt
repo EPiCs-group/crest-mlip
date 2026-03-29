@@ -36,7 +36,20 @@ option(WITH_GFN0    "Enable support for GFN0-xTB" TRUE)
 option(WITH_GFNFF   "Enable support for GFN-FF"   TRUE)
 option(WITH_LIBPVOL "Enable support for LIBPVOL"  TRUE)
 option(WITH_LWONIOM "Enable support for lwONIOM"  TRUE)
+option(WITH_LIBTORCH "Enable direct libtorch MLIP inference" FALSE)
+option(WITH_PYMLIP   "Enable embedded Python MLIP inference" FALSE)
 option(WITH_TESTS   "Enable unit tests"           TRUE)
+
+# MLIP calculators (libtorch, pymlip) provide only energy+gradient, not
+# Wiberg Bond Orders (WBOs).  GFN-FF supplies lightweight topology-based
+# WBOs needed by SHAKE (bond constraints) and the flexibility measure
+# that controls MTD simulation length.  Auto-enable if the user forgot.
+if(WITH_LIBTORCH OR WITH_PYMLIP)
+  if(NOT WITH_GFNFF)
+    message(STATUS "Enabling WITH_GFNFF (required by MLIP builds for WBO calculation)")
+    set(WITH_GFNFF TRUE CACHE BOOL "Enable support for GFN-FF" FORCE)
+  endif()
+endif()
 
 option(STATICBUILD  "Attempt to link everything statically" FALSE) 
 set(PYTHON_BINDINGS OFF CACHE BOOL "Disable python bindings for submodules that have them" FORCE)
@@ -103,6 +116,8 @@ set(gfnffvar "${WITH_GFNFF}")
 set(tblitevar "${WITH_TBLITE}")
 set(libpvolvar "${WITH_LIBPVOL}")
 set(lwoniomvar "${WITH_LWONIOM}")
+set(libtorchvar "${WITH_LIBTORCH}")
+set(pymlipvar "${WITH_PYMLIP}")
 
 configure_file(
   "${PROJECT_SOURCE_DIR}/assets/template/metadata.f90"

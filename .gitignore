@@ -1,3 +1,4 @@
+# === Fortran build artifacts ===
 *.o
 *.mod
 *.tgz
@@ -10,3 +11,27 @@ _build*
 _dist*
 src/crest
 bin/
+
+# === macOS ===
+.DS_Store
+
+# === IDE / editor ===
+.vscode/
+.idea/
+*.swp
+*~
+
+# === Python ===
+__pycache__/
+*.pyc
+.venv/
+
+# === Model weights (too large for git, download separately) ===
+*.pt
+*.pth
+*.model
+
+# === Test outputs & runtime artifacts ===
+crest_uma_test/
+crest_uma_test_CUDA/
+crest_uma_test_CUDA_1_failed/

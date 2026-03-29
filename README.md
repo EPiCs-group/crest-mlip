@@ -12,6 +12,127 @@
 
 </div>
 
+---
+
+> **CREST-UMA** — This fork adds Machine Learning Interatomic Potential (MLIP)
+> support to CREST via three backends: **libtorch** (direct C++ TorchScript),
+> **pymlip** (embedded Python for UMA/MACE), and **ASE socket** (TCP to any
+> ASE calculator). Based on CREST 3.0.2.
+> See [CHANGES.md](CHANGES.md) for a detailed list of modifications.
+
+---
+
+## MLIP Backends
+
+| Backend | Method keyword | When to Use |
+|---------|----------------|-------------|
+| `libtorch` | `libtorch` | Fastest GPU inference, no Python runtime needed |
+| `pymlip` (UMA) | `uma` | Meta's Universal MLIP Accelerator (fairchem) |
+| `pymlip` (MACE) | `mace` | MACE foundation models (mace-torch) |
+| `ase-socket` | `ase-socket` | Any ASE-compatible calculator via TCP socket |
+
+## Building with MLIP Support
+
+### Prerequisites
+- CMake >= 3.17 and gfortran >= 10 (same as upstream CREST)
+- For **libtorch**: PyTorch C++ (libtorch) installed
+- For **pymlip**: Python 3.10+ with `fairchem-core` (UMA) or `mace-torch` (MACE)
+
+Conda environment files are provided in `environments/`:
+```bash
+conda env create -f environments/uma-cuda.yml
+conda activate crest-uma
+```
+
+### CMake Build
+
+For pymlip (UMA/MACE):
+```bash
+cmake -B build \
+  -DWITH_PYMLIP=true \
+  -DPython3_EXECUTABLE=$(which python) \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+```
+
+For libtorch:
+```bash
+cmake -B build \
+  -DWITH_LIBTORCH=true \
+  -DCMAKE_PREFIX_PATH=/path/to/libtorch \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+```
+
+> **Note:** `WITH_GFNFF` is auto-enabled when building with MLIP support — GFN-FF provides
+> lightweight topology-based WBOs needed by SHAKE bond constraints and the flexibility measure.
+
+## Quick Start
+
+```bash
+# UMA conformer search (GPU)
+crest molecule.xyz --input examples/conformer_search_uma.toml
+
+# MACE optimization via embedded Python
+crest molecule.xyz --input examples/optimization_mace_pymlip.toml
+
+# MACE conformer search via libtorch (TorchScript)
+crest molecule.xyz --input examples/conformer_search_mace_libtorch.toml
+```
+
+## Key Changes from Upstream CREST 3.0.2
+
+- **Three MLIP backends** added: libtorch (C++ TorchScript), pymlip (embedded Python), ASE socket (TCP)
+- **GPU batched inference** in `parallel.f90`: pipelined single-GPU and multi-GPU paths bypass OpenMP overhead, processing hundreds of structures in batched forward passes
+- **Shared model loading**: one model loaded on master thread, handle broadcast to all workers — avoids duplicating multi-GB model weights in GPU memory
+- **GFN-FF as WBO provider**: when MLIP is the main calculator, GFN-FF topology provides binary Wiberg Bond Orders for SHAKE bond constraints (no singlepoint needed)
+- **WBO cascade**: GFN2-xTB (continuous WBOs) → GFN-FF (binary) → size-based default, ensuring flexibility measures and SHAKE work even without xTB as the main calculator
+- **SHAKE graceful degradation**: if no WBOs available at all, SHAKE mode 2 (all-bond) falls back to mode 1 (X-H only) instead of aborting
+- **MLIP resource cleanup**: all algorithm endpoints (MD, optimization, singlepoint, scan, numhess) release GPU memory, close sockets, and free Python objects after each step
+- **GFN-FF hard build requirement**: `WITH_GFNFF` is auto-enabled when building with `WITH_LIBTORCH` or `WITH_PYMLIP`
+- **Conda environments**: ready-to-use YAML files for UMA and MACE (CPU and CUDA variants)
+
+## TOML Configuration Reference
+
+### MLIP Keywords
+
+All keys go inside `[[calculation.level]]` blocks.
+
+| Key | Values | Default | Description |
+|-----|--------|---------|-------------|
+| `method` | `uma`, `mace`, `libtorch`, `pymlip`, `ase-socket` | — | Calculator backend selection |
+| `device` | `cpu`, `cuda`, `cuda:0`–`cuda:3`, `mps` | `cpu` | Compute device for inference |
+| `model_path` | file path | — | Path to model checkpoint (`.pt` or `.model`) |
+| `model_type` | `uma`, `mace` | — | Model family (pymlip backend only) |
+| `model_format` | `generic`, `mace` | `generic` | TorchScript output format (libtorch only) |
+| `cutoff` | float (Angstrom) | `6.0` | Neighbor list cutoff (libtorch only) |
+| `task` | string | — | UMA task name, e.g. `s2ef` |
+| `atom_refs` | file path | — | Per-element energy references YAML |
+| `compile_mode` | `""`, `reduce-overhead`, `max-autotune` | `""` | torch.compile mode (pymlip only) |
+| `dtype` | `float64`, `float32` | `float64` | Floating-point precision (MACE only) |
+| `turbo` | `true`/`false` | `false` | UMA turbo: tf32 + compile + merge_mole |
+| `batch_size` | integer | `0` (auto) | Structures per GPU batch |
+| `aten_threads` | integer | `0` (auto) | ATen intra-op threads |
+| `shared_model` | `true`/`false` | `false` | Share one model across threads (libtorch) |
+| `ngpus` | integer | `0` (auto) | GPUs for multi-GPU batching |
+| `host` | string | `127.0.0.1` | ASE socket server hostname |
+| `port` | integer | `6789` | ASE socket server TCP port |
+| `debug` | `true`/`false` | `false` | Per-call timing output |
+
+### Example TOML
+
+```toml
+runtype = "imtd-gc"
+threads = 16
+
+[[calculation.level]]
+method     = "uma"
+device     = "cuda"
+batch_size = 16
+```
+
+---
+
 CREST (abbreviated from ***C***onformer-***R***otamer ***E***nsemble ***S***ampling ***T***ool) is a program for the automated exploration of the low-energy molecular chemical space.
 It functions as an OMP scheduler for calculations with efficient force-field and semiempirical quantum mechanical methods such as xTB, and provides
 a variety of capabilities for creation and analysis of structure ensembles.<br> See our recent publication in *J. Chem. Phys.* for a feature overview: [**https://doi.org/10.1063/5.0197592**](https://doi.org/10.1063/5.0197592)
@@ -173,6 +294,12 @@ By default the `meson` build will create a **statically** linked binary.
 6. P. Pracht, C. Bannwarth, *J. Chem. Theory Comput.*, **2022**, *18 (10)*, 6370-6385. DOI: [10.1021/acs.jctc.2c00578](https://dx.doi.org/10.1021/acs.jctc.2c00578)
 
 7. P. Pracht, S. Grimme, C. Bannwarth, F. Bohle, S. Ehlert, G. Feldmann, J. Gorges, M. Müller, T. Neudecker, C. Plett, S. Spicher, P. Steinbach, P. Wesołowski, F. Zeller, *J. Chem. Phys.*, **2024**, *160*, 114110. DOI: [10.1063/5.0197592](https://doi.org/10.1063/5.0197592)
+
+If you use the MLIP backends in this fork, please also cite:
+
+8. **UMA**: Meta Fundamental AI Research, *fairchem-core*, [https://github.com/FAIR-Chem/fairchem](https://github.com/FAIR-Chem/fairchem)
+
+9. **MACE**: I. Batatia, D.P. Kovacs, G.N.C. Simm, C. Ortner, G. Csanyi, *NeurIPS*, **2022**. DOI: [10.48550/arXiv.2206.07697](https://doi.org/10.48550/arXiv.2206.07697)
 
 <details>
 <summary><h4>BibTex entries</h4></summary>

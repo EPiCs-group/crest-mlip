@@ -1,0 +1,11 @@
+# Geometry optimization using MACE via embedded Python (pymlip backend).
+# Requires mace-torch installed in the active Python environment.
+# Usage: crest molecule.xyz --input optimization_mace_pymlip.toml
+
+runtype = "ancopt"
+threads = 4
+
+[[calculation.level]]
+method     = "mace"
+model_path = "mace-mp-0-medium.model"
+device     = "cuda"

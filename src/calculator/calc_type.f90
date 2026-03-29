@@ -19,6 +19,7 @@
 
 module calc_type
   use iso_fortran_env,only:wp => real64,stdout => output_unit
+  use iso_c_binding,only:c_ptr,c_null_ptr,c_associated
   use constraints
   use strucrd,only:coord
 !>--- api types
@@ -49,10 +50,13 @@ module calc_type
     integer :: gfnff     = 9
     integer :: libpvol   = 10
     integer :: lj        = 11
+    integer :: libtorch  = 12
+    integer :: pymlip    = 13
+    integer :: ase_socket = 14
   end type enum_jobtype
   type(enum_jobtype), parameter,public :: jobtype = enum_jobtype()
 
-  character(len=45),parameter,private :: jobdescription(12) = [ &
+  character(len=44),parameter,private :: jobdescription(15) = [ &
      & 'Unknown calculation type                    ', &
      & 'xTB calculation via external binary         ', &
      & 'Generic script execution                    ', &
@@ -64,7 +68,10 @@ module calc_type
      & 'GFN0*-xTB calculation via GFN0 lib          ', &
      & 'GFN-FF calculation via GFNFF lib            ', &
      & 'external pressure calculation via libpvol   ', &
-     & 'Lennard-Jones potential calculation         ' ]
+     & 'Lennard-Jones potential calculation         ', &
+     & 'MLIP direct inference via libtorch          ', &
+     & 'MLIP inference via embedded Python          ', &
+     & 'ASE calculator via TCP socket               ' ]
 !&>
 
 !=========================================================================================!
@@ -175,6 +182,74 @@ module calc_type
 
     !> ORCA job template
     type(orca_input) :: ORCA
+
+    !>=========================================================================
+    !> MLIP (Machine Learning Interatomic Potential) calculator state
+    !>=========================================================================
+    !> Three backends are available, each providing energy+gradient only
+    !> (no WBOs, no dipoles).  All use lazy initialization: the model is
+    !> loaded on the first engrad() call, not at parse time.
+    !>
+    !> Backend selection via TOML:  method = 'libtorch' | 'pymlip' | 'ase-socket'
+    !> Shorthand aliases:           method = 'uma' | 'mace' (→ pymlip)
+    !>
+    !> Thread safety: each OpenMP thread gets its own calc instance with
+    !> its own handle.  In GPU mode, a single shared handle is loaded once
+    !> and broadcast to all threads (GPU serializes internally).
+    !>=========================================================================
+
+    !>--- libtorch: direct TorchScript inference via C++ (fastest, GPU-native)
+    !>    Model loaded by libtorch_init() → stored in libtorch_handle.
+    !>    Handles are opaque C++ pointers (LibtorchContext*) managed by
+    !>    libtorch_bridge.cpp.  Cleanup via libtorch_cleanup().
+    type(c_ptr) :: libtorch_handle = c_null_ptr  !> opaque C++ model context
+    character(len=:),allocatable :: libtorch_model_path !> path to TorchScript .pt
+    integer :: libtorch_device_id = 0   !> 0=CPU, 1=CUDA:0, 2=MPS, 10-13=CUDA:0-3
+    integer :: libtorch_model_format = 0 !> 0=generic (tuple output), 1=MACE LAMMPS (dict)
+    real(8) :: libtorch_cutoff = 6.0d0  !> neighbor list cutoff in Angstrom
+    logical :: libtorch_debug = .false. !> print per-call timing every 50 calls
+    integer :: libtorch_call_count = 0  !> running counter for debug output
+    real(8) :: libtorch_total_time = 0.0d0  !> cumulative wall time (seconds)
+
+    !>--- GPU parallelization settings (shared by libtorch and pymlip)
+    !>    In GPU mode, the model is loaded ONCE on the master thread and the
+    !>    handle is shared.  Forward passes are serialized by a C++ mutex
+    !>    (libtorch) or the Python GIL (pymlip).  Batched inference bypasses
+    !>    this serialization by sending multiple structures in one call.
+    logical :: libtorch_shared_model = .false. !> use single model for all threads
+    integer :: mlip_batch_size = 0      !> structures per GPU batch (0=auto from nat)
+    integer :: mlip_aten_threads = 0    !> ATen intra-op threads (0=auto: T for CPU, 1 for GPU)
+    integer :: mlip_ngpus = 0           !> GPUs for multi-GPU batching (0=auto-detect, cap 2)
+
+    !>--- pymlip: embedded CPython inference (UMA via fairchem, MACE via mace-torch)
+    !>    Python interpreter is initialized once per process.  Each handle is
+    !>    a PyMLIPContext* allocated by pymlip_bridge.c.  The GIL is acquired
+    !>    per engrad call and released immediately after.  Cleanup frees the
+    !>    Python calculator object; pymlip_finalize() shuts down the interpreter
+    !>    at program exit (called from cleanup.f90).
+    type(c_ptr) :: pymlip_handle = c_null_ptr    !> opaque C context (PyMLIPContext*)
+    character(len=:),allocatable :: pymlip_model_type !> 'uma' or 'mace'
+    character(len=:),allocatable :: pymlip_model_path !> path to model checkpoint (.pt)
+    character(len=:),allocatable :: pymlip_device     !> 'cpu', 'cuda', or 'mps'
+    character(len=:),allocatable :: pymlip_task       !> UMA task string (e.g. 's2ef')
+    character(len=:),allocatable :: pymlip_atom_refs  !> optional per-element energy refs YAML
+    logical :: pymlip_debug = .false.  !> print per-call timing every 50 calls
+    integer :: pymlip_call_count = 0   !> running counter for debug output
+    real(8) :: pymlip_total_time = 0.0d0  !> cumulative wall time (seconds)
+    character(len=:),allocatable :: pymlip_compile_mode !> torch.compile: ''=off, 'reduce-overhead', 'max-autotune'
+    character(len=:),allocatable :: pymlip_dtype        !> 'float64' or 'float32' (MACE precision)
+    logical :: pymlip_turbo = .false.  !> UMA turbo: enable tf32 + torch.compile + merge_mole
+
+    !>--- ase_socket: external ASE calculator via TCP socket
+    !>    Connects to a user-started Python server (e.g. scripts/ase_server.py).
+    !>    Protocol: send atomic numbers + coordinates, receive energy + gradient.
+    !>    Useful when the model can't be embedded (custom ASE calculators).
+    type(c_ptr) :: socket_handle = c_null_ptr  !> opaque C socket handle
+    character(len=:),allocatable :: socket_host !> server hostname (default: 127.0.0.1)
+    integer :: socket_port = 6789              !> server TCP port
+    logical :: socket_debug = .false.          !> print per-call timing
+    integer :: socket_call_count = 0           !> running counter
+    real(8) :: socket_total_time = 0.0d0       !> cumulative wall time (seconds)
 
 !>--- Type procedures
   contains
@@ -947,6 +1022,35 @@ contains  !>--- Module routines start here
 
     self%ONIOM_highlowroot = 0
     self%ONIOM_id = 0
+
+    self%libtorch_handle = c_null_ptr
+    self%libtorch_model_path = ''
+    self%libtorch_device_id = 0
+    self%libtorch_model_format = 0
+    self%libtorch_cutoff = 6.0d0
+    self%libtorch_debug = .false.
+    self%libtorch_call_count = 0
+    self%libtorch_total_time = 0.0d0
+
+    self%pymlip_handle = c_null_ptr
+    self%pymlip_model_type = 'uma'
+    self%pymlip_model_path = ''
+    self%pymlip_device = 'cpu'
+    self%pymlip_task = ''
+    self%pymlip_atom_refs = ''
+    self%pymlip_debug = .false.
+    self%pymlip_call_count = 0
+    self%pymlip_total_time = 0.0d0
+    self%pymlip_compile_mode = ''
+    self%pymlip_dtype = 'float64'
+    self%pymlip_turbo = .false.
+
+    self%socket_handle = c_null_ptr
+    self%socket_host = 'localhost'
+    self%socket_port = 6789
+    self%socket_debug = .false.
+    self%socket_call_count = 0
+    self%socket_total_time = 0.0d0
     return
   end subroutine calculation_settings_deallocate
 
@@ -992,6 +1096,36 @@ contains  !>--- Module routines start here
     !> add a short description
     self%description = trim(jobdescription(self%id+1))
     call calculation_settings_shortflag(self)
+
+    !> Apply MLIP defaults for pymlip jobs
+    if (self%id == jobtype%pymlip) then
+      !> Default device
+      if (.not.allocated(self%pymlip_device) .or. &
+          len_trim(self%pymlip_device) == 0) then
+        self%pymlip_device = 'cpu'
+      end if
+      !> Default model path (registry name) when not specified
+      if (.not.allocated(self%pymlip_model_path) .or. &
+          len_trim(self%pymlip_model_path) == 0) then
+        if (allocated(self%pymlip_model_type)) then
+          select case (self%pymlip_model_type)
+          case ('uma')
+            self%pymlip_model_path = 'uma-s-1p1'
+          case ('mace')
+            self%pymlip_model_path = 'medium'
+          end select
+        end if
+      end if
+      !> Default task for UMA
+      if (allocated(self%pymlip_model_type)) then
+        if (self%pymlip_model_type == 'uma') then
+          if (.not.allocated(self%pymlip_task) .or. &
+              len_trim(self%pymlip_task) == 0) then
+            self%pymlip_task = 'omol'
+          end if
+        end if
+      end if
+    end if
 
     if (.not.allocated(self%calcspace)) then
       !> I've decided to perform all calculations in a separate directory to
@@ -1047,6 +1181,25 @@ contains  !>--- Module routines start here
       self%shortflag =  'LIVPVOL'
     case( jobtype%lj )
       self%shortflag =  'LJ'
+    case( jobtype%libtorch )
+      if (self%libtorch_model_format == 1) then
+        self%shortflag = 'libtorch-MACE'
+      else
+        self%shortflag = 'libtorch-MLIP'
+      end if
+    case( jobtype%pymlip )
+      if (allocated(self%pymlip_model_type)) then
+        select case (self%pymlip_model_type)
+        case ('uma')
+          self%shortflag = 'UMA (embed)'
+        case ('mace')
+          self%shortflag = 'MACE (embed)'
+        case default
+          self%shortflag = 'pymlip'
+        end select
+      else
+        self%shortflag = 'pymlip'
+      end if
     case default
       self%shortflag = 'undefined'
     end select

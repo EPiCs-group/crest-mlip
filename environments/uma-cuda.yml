@@ -1,0 +1,26 @@
+# Conda environment for CREST + UMA (CUDA)
+#
+# Usage:
+#   conda env create -f environments/uma-cuda.yml
+#   conda activate crest-uma-cuda
+#   cmake -B build -DWITH_PYMLIP=true
+#
+# For gated UMA models (auto-download):
+#   huggingface-cli login   # or set HF_TOKEN env var
+#   Request access at https://huggingface.co/facebook/UMA
+#
+name: crest-uma-cuda
+channels:
+  - conda-forge
+  - pytorch
+  - nvidia
+dependencies:
+  - python=3.11
+  - numpy
+  - pyyaml
+  - pip
+  - pip:
+    - torch --index-url https://download.pytorch.org/whl/cu121
+    - ase
+    - fairchem-core
+    - huggingface_hub

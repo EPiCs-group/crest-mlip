@@ -1,0 +1,13 @@
+# Conformer search using MACE via direct libtorch (TorchScript) inference.
+# Requires a MACE model exported to TorchScript (see scripts/export_mace.py).
+# Usage: crest molecule.xyz --input conformer_search_mace_libtorch.toml
+
+runtype = "imtd-gc"
+threads = 16
+
+[[calculation.level]]
+method       = "libtorch"
+model_path   = "mace-model.pt"
+model_format = "mace"
+device       = "cuda"
+cutoff       = 6.0

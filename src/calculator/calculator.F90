@@ -48,6 +48,25 @@ module crest_calculator
   public :: calc_constraint
 !>--- RE-EXPORT of printout routines
   public :: calculation_summary
+!>--- RE-EXPORT of libtorch cleanup and parallelization
+  public :: libtorch_cleanup
+  public :: libtorch_set_threads
+  public :: libtorch_init_shared
+  public :: libtorch_engrad_batch_f
+  public :: libtorch_shared_cleanup
+  public :: libtorch_engrad_batch_pipeline_f
+  public :: libtorch_engrad_batch_multigpu_f
+  public :: libtorch_load_shared_on_device_f
+  public :: libtorch_get_cuda_device_count_f
+!>--- RE-EXPORT of pymlip routines
+  public :: pymlip_init
+  public :: pymlip_cleanup
+  public :: pymlip_finalize
+  public :: pymlip_engrad_batch_f
+!>--- RE-EXPORT of ase_socket routines
+  public :: ase_socket_engrad
+  public :: ase_socket_init
+  public :: ase_socket_cleanup
 !=========================================================================================!
 
 !>--- global engrad call counter
@@ -377,6 +396,25 @@ contains  !> MODULE PROCEDURES START HERE
       call lj_engrad(molptr%nat,molptr%xyz*autoaa,dum1,dum2, &
       &              calc%etmp(id),calc%grdtmp(:,1:pnat,id))
       calc%grdtmp(:,:,id) = calc%grdtmp(:,:,id)*autoaa
+    
+    !>--- MLIP backends: provide energy + gradient only (no WBOs, dipoles).
+    !>    All three use lazy initialization — the model is loaded on the
+    !>    first call, not at parse time.  Coordinates are in Bohr (atomic
+    !>    units); unit conversion happens inside each backend's C/C++ layer.
+    case (jobtype%libtorch)
+      !> Direct C++ TorchScript inference (fastest on GPU, no Python needed)
+      call libtorch_engrad(molptr, calc%calcs(id), calc%etmp(id), &
+      &                    calc%grdtmp(:,1:pnat,id), iostatus)
+
+    case (jobtype%pymlip)
+      !> Embedded Python inference via CPython C API (UMA/fairchem, MACE)
+      call pymlip_engrad(molptr, calc%calcs(id), calc%etmp(id), &
+      &                  calc%grdtmp(:,1:pnat,id), iostatus)
+
+    case (jobtype%ase_socket)
+      !> External ASE calculator via TCP socket (user-started Python server)
+      call ase_socket_engrad(molptr, calc%calcs(id), calc%etmp(id), &
+      &                      calc%grdtmp(:,1:pnat,id), iostatus)
 
     case default
       calc%etmp(id) = 0.0_wp

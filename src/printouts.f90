@@ -753,6 +753,8 @@ subroutine print_crest_metadata()
   write (*,'(2x,a,1x,a)') '-DWITH_TBLITE    :',tblitevar
   write (*,'(2x,a,1x,a)') '-DWITH_LIBPVOL   :',libpvolvar
   write (*,'(2x,a,1x,a)') '-DWITH_LWONIOM   :',lwoniomvar
+  write (*,'(2x,a,1x,a)') '-DWITH_LIBTORCH  :',libtorchvar
+  write (*,'(2x,a,1x,a)') '-DWITH_PYMLIP    :',pymlipvar
 end subroutine print_crest_metadata
 
 !========================================================================================!

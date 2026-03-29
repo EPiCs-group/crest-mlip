@@ -189,25 +189,28 @@ end subroutine screen
 
 !=================================================================================!
 
-subroutine xtbsp(env,xtblevel)
+subroutine xtbsp(env,xtblevel,iostat)
   use iso_fortran_env,only:wp => real64
   use crest_data
   use strucrd,only:coord
   implicit none
   type(systemdata) :: env
   integer,intent(in),optional :: xtblevel
+  integer,intent(out),optional :: iostat
   interface
-    subroutine crest_xtbsp(env,xtblevel,molin)
+    subroutine crest_xtbsp(env,xtblevel,molin,iostat)
       import :: systemdata,coord
       type(systemdata) :: env
       integer,intent(in),optional :: xtblevel
       type(coord),intent(in),optional :: molin
+      integer,intent(out),optional :: iostat
     end subroutine crest_xtbsp
   end interface
   if (env%legacy) then
     call xtbsp_legacy(env,xtblevel)
+    if (present(iostat)) iostat = 0
   else
-    call crest_xtbsp(env,xtblevel)
+    call crest_xtbsp(env,xtblevel,iostat=iostat)
   end if
 end subroutine xtbsp
 subroutine xtbsp2(fname,env)

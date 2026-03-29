@@ -31,16 +31,26 @@ subroutine md_length_setup(env)
   use crest_data
   use strucrd
   use zdata, only:readwbo
+  use gfnff_api,only: gfnff_get_topology_wbos
   implicit none
   !> IN/OUTPUT
   type(systemdata) :: env    !> MAIN STORAGE OS SYSTEM DATA
   !> LOCAL
   real(wp) :: total,minimum,lenthr
   real(wp) :: flex,av1,rfac,nciflex
-  type(coord) :: mol 
+  type(coord) :: mol
   logical :: ex
-!> get reference geometry  
-  call env%ref%to( mol ) 
+  integer :: io_wbo
+  interface
+    subroutine xtbsp(env,xtblevel,iostat)
+      import :: systemdata
+      type(systemdata) :: env
+      integer,intent(in),optional :: xtblevel
+      integer,intent(out),optional :: iostat
+    end subroutine xtbsp
+  end interface
+!> get reference geometry
+  call env%ref%to( mol )
 
 !> at least 5ps per MTD
   minimum = 5.0d0
@@ -50,40 +60,74 @@ subroutine md_length_setup(env)
   call smallhead('Generating MTD length from a flexibility measure')
 
   if ((env%crestver .ne. crest_solv).and..not.env%NCI) then
-    write(stdout,'(1x,a)',advance='no') 'Calculating GFN0-xTB WBOs   ...'
-!>-- xtb singlepoint to get WBOs (always GFN0)
-    call xtbsp(env,0)
-    write (stdout,'(1x,a)') 'done.'
-!>-- save those WBOs to the reference
-    inquire(file='wbo',exist = ex)
-    if(ex)then
-    if(.not.allocated(env%ref%wbo)) allocate(env%ref%wbo( mol%nat, mol%nat), source=0.0_wp)   
-    call readwbo('wbo',mol%nat, env%ref%wbo)
-    endif
-
-!>-- covalent flexibility measure based on WBO and structure only
-    call flexi( mol, env%rednat, env%includeRMSD, flex)
-!>-- NCI flexi based on E(HB)/Nat and E(disp)/Nat
-    call nciflexi(env,nciflex)
-    write (stdout,'(1x,''    covalent flexibility measure :'',f8.3)') flex
-    write (stdout,'(1x,''non-covalent flexibility measure :'',f8.3)') nciflex
-!>-- the NCI flex is only relevant if the covalent framework is flexible
-    flex = 0.5*flex+0.5*nciflex*sqrt(flex)
-
-    if (env%entropic) then
-!>--- special case for entropy mode that depends more strongly on the flexibility than on size
-!>--- -8 accounts for small systems having no conf.
-      av1 = (flex**1.333333)*max(1,env%rednat-8)
-!>--- Maximum of 3000 ps, longer runs can only be conducted by user input
-      lenthr = 3000.0d0
-!>--- minimum is 5 ps set above
-      env%tmtd = 4.50d0*exp(0.165d0*av1)
-    else
-!>--- normal case
+!>-- WBO cascade for flexibility calculation:
+!>--   1) GFN2-xTB via tblite  — continuous WBOs (1.0/1.5/2.0), best accuracy
+!>--   2) GFN-FF topology       — binary WBOs (0/1), fast, no singlepoint
+!>--   3) size-based default    — no WBOs at all, fixed flexibility = 0.5
+!>-- GFN2 is preferred over GFN0 for more accurate bond order estimation.
+!>-- The cost of a single GFN2 singlepoint (~1-5s) is negligible compared
+!>-- to the MLIP conformer search that follows (hours, thousands of calls).
+    write(stdout,'(1x,a)',advance='no') 'Calculating GFN2-xTB WBOs   ...'
+    call xtbsp(env,2,iostat=io_wbo)
+    if (io_wbo .ne. 0) then
+!>-- GFN2 failed — fall back to GFN-FF topology-based WBOs.
+!>-- GFN-FF only builds the neighbor list (no energy evaluation),
+!>-- so it returns binary 0/1 WBOs: bonded=1.0, non-bonded=0.0.
+!>-- flexi() will treat all bonds as single bonds (no double/aromatic
+!>-- distinction), slightly overestimating flexibility for conjugated
+!>-- systems, but still much better than the size-based default.
+      write (stdout,'(1x,a)') 'failed.'
+      write(stdout,'(1x,a)',advance='no') 'Trying GFN-FF topology WBOs  ...'
+      call gfnff_get_topology_wbos(mol,env%chrg,env%ref%wbo,io_wbo)
+    end if
+    if (io_wbo .ne. 0) then
+!>-- All WBO methods failed — use size-based default (flexibility = 0.5)
+      write (stdout,'(1x,a)') 'failed (non-fatal).'
+      write (stdout,'(1x,a)') 'Using size-based default flexibility (WBO calculation not available).'
+      flex = 0.5d0
+      nciflex = 0.5d0
+      flex = 0.5*flex+0.5*nciflex*sqrt(flex)
       av1 = (flex**1.000000)*max(1,env%rednat-8)
-!>--- Maximum of 500 ps
       lenthr = 500.0d0
       env%tmtd = 3.0d0*exp(0.10d0*av1)
+    else
+      write (stdout,'(1x,a)') 'done.'
+!>-- Save WBOs to the reference structure for later use by SHAKE.
+!>-- If GFN2 succeeded, xtbsp() wrote a 'wbo' file → read it.
+!>-- If GFN-FF was the source, env%ref%wbo is already populated
+!>-- directly by gfnff_get_topology_wbos() (no file written).
+      inquire(file='wbo',exist = ex)
+      if(ex)then
+        if(.not.allocated(env%ref%wbo)) allocate(env%ref%wbo( mol%nat, mol%nat), source=0.0_wp)
+        call readwbo('wbo',mol%nat, env%ref%wbo)
+      else if(allocated(env%ref%wbo)) then
+        write (stdout,'(1x,a)') 'Note: GFN-FF binary WBOs — flexibility estimate may be approximate.'
+      endif
+
+!>-- covalent flexibility measure based on WBO and structure only
+      call flexi( mol, env%rednat, env%includeRMSD, flex)
+!>-- NCI flexi based on E(HB)/Nat and E(disp)/Nat
+      call nciflexi(env,nciflex)
+      write (stdout,'(1x,''    covalent flexibility measure :'',f8.3)') flex
+      write (stdout,'(1x,''non-covalent flexibility measure :'',f8.3)') nciflex
+!>-- the NCI flex is only relevant if the covalent framework is flexible
+      flex = 0.5*flex+0.5*nciflex*sqrt(flex)
+
+      if (env%entropic) then
+!>--- special case for entropy mode that depends more strongly on the flexibility than on size
+!>--- -8 accounts for small systems having no conf.
+        av1 = (flex**1.333333)*max(1,env%rednat-8)
+!>--- Maximum of 3000 ps, longer runs can only be conducted by user input
+        lenthr = 3000.0d0
+!>--- minimum is 5 ps set above
+        env%tmtd = 4.50d0*exp(0.165d0*av1)
+      else
+!>--- normal case
+        av1 = (flex**1.000000)*max(1,env%rednat-8)
+!>--- Maximum of 500 ps
+        lenthr = 500.0d0
+        env%tmtd = 3.0d0*exp(0.10d0*av1)
+      end if
     end if
   else
     write (stdout,'(1x,"System flexiblity is set to 1.0 for NCI mode")')

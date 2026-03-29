@@ -1,0 +1,25 @@
+# Conda environment for CREST + UMA (CPU)
+#
+# Usage:
+#   conda env create -f environments/uma-cpu.yml
+#   conda activate crest-uma
+#   cmake -B build -DWITH_PYMLIP=true
+#
+# For gated UMA models (auto-download):
+#   huggingface-cli login   # or set HF_TOKEN env var
+#   Request access at https://huggingface.co/facebook/UMA
+#
+name: crest-uma
+channels:
+  - conda-forge
+  - pytorch
+dependencies:
+  - python=3.11
+  - numpy
+  - pyyaml
+  - pip
+  - pip:
+    - torch --index-url https://download.pytorch.org/whl/cpu
+    - ase
+    - fairchem-core
+    - huggingface_hub

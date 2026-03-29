@@ -14,7 +14,20 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with crest.  If not, see <https://www.gnu.org/licenses/>.
 
+if get_option('WITH_LIBTORCH')
+  srcs += files('libtorch_bridge.cpp')
+endif
+
+if get_option('WITH_PYMLIP')
+  srcs += files('pymlip_bridge.c')
+endif
+
+srcs += files('ase_socket_bridge.c')
+
 srcs += files(
+  'calculator_libtorch.F90',
+  'calculator_pymlip.F90',
+  'calculator_ase_socket.F90',
   'calculator.F90',
   'calc_type.f90',
   'printouts.F90',

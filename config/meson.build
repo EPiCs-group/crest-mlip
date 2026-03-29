@@ -263,6 +263,31 @@ if get_option('WITH_LWONIOM')
 endif
 
 
+# libtorch direct MLIP inference
+if get_option('WITH_LIBTORCH')
+ add_project_arguments('-DWITH_LIBTORCH', language: 'fortran')
+ add_project_arguments('-DWITH_LIBTORCH', language: 'c')
+ torch_dep = dependency('Torch', method: 'cmake', required: true)
+ exe_deps += torch_dep
+endif
+
+# Embedded Python MLIP inference
+if get_option('WITH_PYMLIP')
+ add_project_arguments('-DWITH_PYMLIP', language: 'fortran')
+ add_project_arguments('-DWITH_PYMLIP', language: 'c')
+ python3_dep = dependency('python3-embed', required: true)
+ exe_deps += python3_dep
+endif
+
+# MLIP calculators (libtorch, pymlip) provide only energy+gradient, not
+# Wiberg Bond Orders (WBOs).  GFN-FF supplies lightweight topology-based
+# WBOs needed by SHAKE (bond constraints) and the flexibility measure.
+# Meson cannot force-override options, so we error out instead.
+if (get_option('WITH_LIBTORCH') or get_option('WITH_PYMLIP')) and not get_option('WITH_GFNFF')
+  error('WITH_GFNFF must be enabled when building with MLIP support (WITH_LIBTORCH or WITH_PYMLIP). GFN-FF is required for WBO calculation.')
+endif
+
+
 ## ========================================= ##
 ## populate the data for crest_metadata.fh
 ## ========================================= ##  
@@ -294,6 +319,8 @@ config = configuration_data({
   'tblitevar': get_option('WITH_TBLITE'),
   'libpvolvar': get_option('WITH_LIBPVOL'),
   'lwoniomvar': get_option('WITH_LWONIOM'),
+  'libtorchvar': get_option('WITH_LIBTORCH'),
+  'pymlipvar': get_option('WITH_PYMLIP'),
 })
 
 

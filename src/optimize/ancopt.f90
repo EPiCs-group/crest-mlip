@@ -184,7 +184,7 @@ contains  !> MODULE PROCEDURES START HERE
       write (*,'(5x,"change ΔE",e18.7,1x,"Eh")') 0.0_wp
       write (*,'(3x,"gradient norm :",f14.7,1x,"Eh/a0")',advance='no') gnorm
       write (*,'(2x,"predicted",e18.7)',advance='no') 0.0_wp
-      write (*,'(1x,"("f7.2"%)")')-0.0_wp
+      write (*,'(1x,"(",f7.2,"%)")')-0.0_wp
     end if
 
 !>======================================================================
@@ -448,12 +448,12 @@ contains  !> MODULE PROCEDURES START HERE
         if (ii > 1) then
           dummy = (depred-echng)/echng*100.0_wp
           if (abs(dummy) < 1000.0_wp) then
-            write (*,'(1x,"("f7.2"%)")') dummy
+            write (*,'(1x,"(",f7.2,"%)")') dummy
           else
             write (*,'(1x,"(*******%)")')
           end if
         else
-          write (*,'(1x,"("f7.2"%)")')-100.0_wp
+          write (*,'(1x,"(",f7.2,"%)")')-100.0_wp
         end if
       end if
 

@@ -1,0 +1,22 @@
+# Conda environment for CREST + MACE (CUDA)
+#
+# Usage:
+#   conda env create -f environments/mace-cuda.yml
+#   conda activate crest-mace-cuda
+#   cmake -B build -DWITH_PYMLIP=true
+#
+# MACE foundation models auto-download from GitHub (no token needed).
+#
+name: crest-mace-cuda
+channels:
+  - conda-forge
+  - pytorch
+  - nvidia
+dependencies:
+  - python=3.11
+  - numpy
+  - pip
+  - pip:
+    - torch --index-url https://download.pytorch.org/whl/cu121
+    - ase
+    - mace-torch
