@@ -111,11 +111,11 @@ All keys go inside `[[calculation.level]]` blocks.
 | `model_type` | `uma`, `mace` | — | Model family (pymlip backend only) |
 | `model_format` | `generic`, `mace` | `generic` | TorchScript output format (libtorch only) |
 | `cutoff` | float (Angstrom) | `6.0` | Neighbor list cutoff (libtorch only) |
-| `task` | string | — | UMA task name, e.g. `s2ef` |
-| `atom_refs` | file path | — | Per-element energy references YAML |
+| `task` | string | — | UMA task name, e.g. `omol` |
+| `atom_refs` | file path | — | Per-element energy references YAML (UMA only) |
 | `compile_mode` | `""`, `reduce-overhead`, `max-autotune` | `""` | torch.compile mode (pymlip only) |
 | `dtype` | `float64`, `float32` | `float64` | Floating-point precision (MACE only) |
-| `turbo` | `true`/`false` | `false` | UMA turbo: tf32 + compile + merge_mole |
+| `turbo` | `true`/`false` | `false` | UMA turbo-mode: tf32 + compile + merge_mole |
 | `batch_size` | integer | `0` (auto) | Structures per GPU batch |
 | `aten_threads` | integer | `0` (auto) | ATen intra-op threads |
 | `shared_model` | `true`/`false` | `false` | Share one model across threads (libtorch) |
