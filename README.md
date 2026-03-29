@@ -304,7 +304,7 @@ If you use the MLIP backends in this fork, please also cite:
 
 8. **UMA**: Meta Fundamental AI Research, *fairchem-core*, [https://github.com/FAIR-Chem/fairchem](https://github.com/FAIR-Chem/fairchem)
 
-9. **MACE**: I. Batatia, D.P. Kovacs, G.N.C. Simm, C. Ortner, G. Csanyi, *NeurIPS*, **2022**. DOI: [10.48550/arXiv.2206.07697](https://doi.org/10.48550/arXiv.2206.07697)
+9. **MACE**: I. Batatia, D.P. Kovacs, G.N.C. Simm, C. Ortner, G. Csanyi, DOI: [10.48550/arXiv.2206.07697](https://doi.org/10.48550/arXiv.2206.07697)
 
 <details>
 <summary><h4>BibTex entries</h4></summary>
