@@ -14,7 +14,7 @@
 
 ---
 
-> **CREST-UMA** — This fork adds Machine Learning Interatomic Potential (MLIP)
+> **CREST-MLIP** — This fork adds Machine Learning Interatomic Potential (MLIP)
 > support to CREST via three backends: **libtorch** (direct C++ TorchScript),
 > **pymlip** (embedded Python for UMA/MACE), and **ASE socket** (TCP to any
 > ASE calculator). Based on CREST 3.0.2.
