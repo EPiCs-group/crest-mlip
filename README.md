@@ -27,7 +27,7 @@
 | Backend | Method keyword | When to Use |
 |---------|----------------|-------------|
 | `libtorch` | `libtorch` | Fastest GPU inference, no Python runtime needed |
-| `pymlip` (UMA) | `uma` | Meta's Universal MLIP Accelerator (fairchem) |
+| `pymlip` (UMA) | `uma` | Meta's Universal Model for Atoms (fairchem) |
 | `pymlip` (MACE) | `mace` | MACE foundation models (mace-torch) |
 | `ase-socket` | `ase-socket` | Any ASE-compatible calculator via TCP socket |
 
