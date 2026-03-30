@@ -30,7 +30,8 @@ contains  !> Unit tests for using gfnff in crest
     new_unittest("GFN-FF singlepoint            ",test_gfnff_sp), &
     new_unittest("GFN-FF singlepoint (cation)   ",test_gfnff_sp_cation), &
     new_unittest("GFN-FF singlepoint (anion)    ",test_gfnff_sp_anion), &
-    new_unittest("GFN-FF singlepoint (ALPB)     ",test_gfnff_sp_alpb) &
+    new_unittest("GFN-FF singlepoint (ALPB)     ",test_gfnff_sp_alpb), &
+    new_unittest("GFN-FF topology WBOs          ",test_gfnff_topology_wbos) &
 #else
     new_unittest("Compiled gfnff subproject",test_compiled_gfnff,should_fail=.true.) &
 #endif
@@ -319,6 +320,77 @@ contains  !> Unit tests for using gfnff in crest
 
     deallocate (grad)
   end subroutine test_gfnff_sp_alpb
+
+!========================================================================================!
+
+  subroutine test_gfnff_topology_wbos(error)
+    !> Test gfnff_get_topology_wbos() — binary WBOs from GFN-FF topology.
+    !> This is the routine used by MLIP calculators to obtain WBOs for SHAKE
+    !> bond constraints without a full xTB singlepoint.
+    use gfnff_api, only: gfnff_get_topology_wbos
+    type(error_type),allocatable,intent(out) :: error
+    type(coord) :: mol
+    real(wp),allocatable :: wbo(:,:)
+    integer :: iostat, i, j
+
+    !> setup — caffeine (24 atoms)
+    call get_testmol('caffeine',mol)
+
+    !> get topology WBOs
+    call gfnff_get_topology_wbos(mol, 0, wbo, iostat)
+
+    !> basic checks
+    call check(error, iostat, 0)
+    if (allocated(error)) return
+
+    if (.not. allocated(wbo)) then
+      call test_failed(error, "WBO array not allocated")
+      return
+    end if
+
+    call check(error, size(wbo,1), mol%nat)
+    if (allocated(error)) return
+    call check(error, size(wbo,2), mol%nat)
+    if (allocated(error)) return
+
+    !> diagonal must be zero
+    do i = 1, mol%nat
+      if (abs(wbo(i,i)) > 1e-10_wp) then
+        call test_failed(error, "WBO diagonal not zero")
+        return
+      end if
+    end do
+
+    !> all values must be 0.0 or 1.0 (binary topology WBOs)
+    do i = 1, mol%nat
+      do j = 1, mol%nat
+        if (abs(wbo(i,j)) > 1e-10_wp .and. abs(wbo(i,j) - 1.0_wp) > 1e-10_wp) then
+          call test_failed(error, "WBO values must be binary (0 or 1)")
+          return
+        end if
+      end do
+    end do
+
+    !> matrix must be symmetric
+    do i = 1, mol%nat
+      do j = i+1, mol%nat
+        if (abs(wbo(i,j) - wbo(j,i)) > 1e-10_wp) then
+          call test_failed(error, "WBO matrix not symmetric")
+          return
+        end if
+      end do
+    end do
+
+    !> caffeine has known bonds — check a few.
+    !> Caffeine (C8H10N4O2): atoms 1-14 are the heavy atoms in testmol.
+    !> At minimum, check that some bonds exist (nonzero WBO count > 0)
+    if (sum(wbo) < 1.0_wp) then
+      call test_failed(error, "WBO matrix has no bonds")
+      return
+    end if
+
+    deallocate(wbo)
+  end subroutine test_gfnff_topology_wbos
 
 !========================================================================================!
 !========================================================================================!

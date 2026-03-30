@@ -214,3 +214,9 @@ jobs:
           ninja -C ${{ env.BUILD_DIR }} install
           echo "CREST_PREFIX=$PWD/_dist" >> $GITHUB_ENV
 
+      - name: Run Python tests (ASE socket, export scripts)
+        if: ${{ matrix.toolchain.build == 'cmake' && matrix.toolchain.compiler == 'gcc' && matrix.toolchain.version == '14' && matrix.build-type == 'debug' }}
+        run: |
+          pip3 install pytest
+          python -m pytest test/test_ase_socket.py test/test_export_scripts.py -v
+

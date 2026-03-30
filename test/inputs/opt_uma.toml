@@ -1,0 +1,6 @@
+runtype = "ancopt"
+threads = 1
+
+[[calculation.level]]
+method = "uma"
+device = "cuda"

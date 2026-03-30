@@ -1,0 +1,8 @@
+runtype = "sp"
+threads = 1
+
+[[calculation.level]]
+method = "mace"
+model_path = "mace-mp-0-medium"
+device = "cuda"
+dtype = "float32"
