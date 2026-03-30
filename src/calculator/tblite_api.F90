@@ -376,7 +376,7 @@ contains  !> MODULE PROCEDURES START HERE
       call ceh_singlepoint(tblite%ctx,tblite%calc,mctcmol,tblite%wfn, &
       &              tblite%accuracy,verbosity)
     case (xtblvl%eeq)
-      call eeq_guess(mctcmol,tblite%calc,tblite%wfn,error)
+      call eeq_guess(mctcmol,tblite%calc,tblite%wfn)
     end select
 
     if (tblite%ctx%failed()) then
