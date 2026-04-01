@@ -187,23 +187,25 @@ subroutine md_length_setup(env)
   endif
 
 !>-- Cap optimization level for MLIP calculators.
-!>   MLIP gradients have inherent numerical noise (~1e-4 to 1e-3 Eh/a0)
-!>   that prevents convergence at tight/vtight thresholds designed for xTB.
-!>   Cap at "normal" (optlev=0): ethr=5e-6 Eh, gthr=1e-3 Eh/a0.
+!>   MLIP gradients have inherent numerical noise (~5e-4 to 4e-3 Eh/a0)
+!>   that prevents convergence at normal/tight/vtight thresholds designed
+!>   for xTB. Benchmarks show 99.9% opt success at "loose" (gthr=4e-3)
+!>   but only 8% at "normal" (gthr=1e-3) for UMA on a 100-atom Ni complex.
+!>   Cap at "loose" (optlev=-1): ethr=5e-5 Eh, gthr=4e-3 Eh/a0.
   has_mlip = .false.
   do jj = 1, env%calc%ncalculations
     if (env%calc%calcs(jj)%id == jobtype%libtorch) has_mlip = .true.
     if (env%calc%calcs(jj)%id == jobtype%pymlip)   has_mlip = .true.
     if (env%calc%calcs(jj)%id == jobtype%ase_socket) has_mlip = .true.
   end do
-  if (has_mlip .and. env%optlev > 0.0_wp) then
+  if (has_mlip .and. env%optlev > -1.0_wp) then
     write(stdout,'(1x,a,f4.1,a)') &
-      'Note: Capping optlev from ',env%optlev,' to 0.0 (normal) for MLIP calculator.'
+      'Note: Capping optlev from ',env%optlev,' to -1.0 (loose) for MLIP calculator.'
     write(stdout,'(1x,a)') &
-      '      MLIP gradient noise prevents convergence at tight/vtight thresholds.'
+      '      MLIP gradient noise floor (~1e-3 Eh/a0) prevents convergence at'
     write(stdout,'(1x,a)') &
-      '      Override with optlev="tight" or converge_g=8.0e-4 in TOML if desired.'
-    env%optlev = 0.0_wp
+      '      normal/tight thresholds. Override with optlev="normal" in TOML.'
+    env%optlev = -1.0_wp
   end if
 
   return
