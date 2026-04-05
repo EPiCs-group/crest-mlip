@@ -30,6 +30,7 @@ subroutine md_length_setup(env)
   use crest_parameters
   use crest_data
   use crest_calculator, only: jobtype
+  use calc_type, only: calculation_settings
   use strucrd
   use zdata, only:readwbo
   use gfnff_api,only: gfnff_get_topology_wbos
