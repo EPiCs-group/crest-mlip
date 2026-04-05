@@ -70,11 +70,13 @@ subroutine write_worker_config(filename, mol, mddat, calc, worker_index)
   call write_string(u, mddat%trajectoryfile)
   call write_string(u, mddat%restartfile)
 
-  !>--- SHAKE settings (only mode, not full data)
-  !>    Worker will re-initialize SHAKE from scratch via init_shake()
-  !>    called inside dynamics(). This avoids serializing conslist,
-  !>    distcons, workspace arrays, and the freezeptr pointer.
+  !>--- SHAKE constraint data (preserve parent's mode 2 constraints from GFN-FF WBOs)
   write(u) mddat%shk%shake_mode
+  write(u) mddat%shk%ncons
+  if (mddat%shk%ncons > 0) then
+    write(u) mddat%shk%conslist(1:2, 1:mddat%shk%ncons)
+    write(u) mddat%shk%distcons(1:mddat%shk%ncons)
+  end if
 
   !>--- MTD potentials
   write(u) mddat%npot
@@ -200,13 +202,24 @@ subroutine read_worker_config(filename, mol, mddat, calc, worker_index, iostat)
   call read_string(u, mddat%trajectoryfile)
   call read_string(u, mddat%restartfile)
 
-  !>--- SHAKE settings
-  !>    Only shake_mode is serialized. Worker lets dynamics() -> init_shake()
-  !>    re-derive constraints from molecule geometry (needs no WBO for mode 1).
+  !>--- SHAKE constraint data (preserves parent's mode 2 from GFN-FF WBOs)
   read(u) mddat%shk%shake_mode
-  mddat%shk%initialized = .false.  ! force re-init in dynamics()
-  mddat%shk%ncons = 0
-  mddat%nshake = 0
+  read(u) mddat%shk%ncons
+  mddat%nshake = mddat%shk%ncons
+  if (mddat%shk%ncons > 0) then
+    allocate(mddat%shk%conslist(2, mddat%shk%ncons))
+    allocate(mddat%shk%distcons(mddat%shk%ncons))
+    read(u) mddat%shk%conslist(1:2, 1:mddat%shk%ncons)
+    read(u) mddat%shk%distcons(1:mddat%shk%ncons)
+    !>--- allocate workspace arrays (normally done by init_shake)
+    allocate(mddat%shk%dro(3, mddat%shk%ncons), source=0.0_wp)
+    allocate(mddat%shk%dr(4, mddat%shk%ncons), source=0.0_wp)
+  end if
+  !>--- mark as initialized so dynamics() -> init_shake() skips re-init.
+  !>    freezeptr is left unset here; dynamics() handles it at line 170-172
+  !>    BEFORE init_shake is called (which returns immediately).
+  mddat%shk%initialized = .true.
+  nullify(mddat%shk%freezeptr)  ! safety: explicit null until dynamics() sets it
 
   !>--- MTD potentials
   read(u) mddat%npot
