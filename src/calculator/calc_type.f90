@@ -172,7 +172,7 @@ module calc_type
     integer  :: ngrid = 1202           !> lebedev grid points per atom
     real(wp) :: extpressure = 0.0_wp   !> hydorstatic pressure in Gpa
     real(wp) :: proberad = 1.5_wp      !> proberadius in Angstroem
-    integer  :: vdwset = 0             !> Type of VDW radii → 0 (default) D3, 1 → Bondi
+    integer  :: vdwset = 0             !> Type of VDW radii -> 0 (default) D3, 1 -> Bondi
     real(wp) :: pvradscal = 1.0_wp     !> Scaling factor for SAS radii
     type(libpvol_calculator),allocatable :: libpvol
 
@@ -191,7 +191,7 @@ module calc_type
     !> loaded on the first engrad() call, not at parse time.
     !>
     !> Backend selection via TOML:  method = 'libtorch' | 'pymlip' | 'ase-socket'
-    !> Shorthand aliases:           method = 'uma' | 'mace' (→ pymlip)
+    !> Shorthand aliases:           method = 'uma' | 'mace' (-> pymlip)
     !>
     !> Thread safety: each OpenMP thread gets its own calc instance with
     !> its own handle.  In GPU mode, a single shared handle is loaded once
@@ -199,7 +199,7 @@ module calc_type
     !>=========================================================================
 
     !>--- libtorch: direct TorchScript inference via C++ (fastest, GPU-native)
-    !>    Model loaded by libtorch_init() → stored in libtorch_handle.
+    !>    Model loaded by libtorch_init() -> stored in libtorch_handle.
     !>    Handles are opaque C++ pointers (LibtorchContext*) managed by
     !>    libtorch_bridge.cpp.  Cleanup via libtorch_cleanup().
     type(c_ptr) :: libtorch_handle = c_null_ptr  !> opaque C++ model context
