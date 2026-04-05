@@ -23,6 +23,7 @@ if get_option('WITH_PYMLIP')
 endif
 
 srcs += files('ase_socket_bridge.c')
+srcs += files('process_bridge.c')
 
 srcs += files(
   'calculator_libtorch.F90',

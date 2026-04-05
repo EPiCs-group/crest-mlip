@@ -31,5 +31,7 @@ srcs += files(
   'ConfSolv.F90',
   'search_conformers.f90',
   'search_entropy.f90',
-  'parallel.f90', 
+  'parallel.f90',
+  'worker_io.f90',
+  'worker_md.f90',
 )
