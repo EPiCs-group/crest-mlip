@@ -308,7 +308,7 @@ contains !> MODULE PROCEDURES START HERE
       case ('cpu')
         job%libtorch_device_id = 0
         job%pymlip_device = 'cpu'
-      case ('cuda')
+      case ('cuda','gpu')
         job%libtorch_device_id = 1
         job%pymlip_device = 'cuda'
       case ('cuda:0')
