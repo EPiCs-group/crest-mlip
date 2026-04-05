@@ -833,16 +833,6 @@ int pymlip_get_gpu_memory(long long* total_bytes, long long* free_bytes) {
 
     PyGILState_STATE gstate = PyGILState_Ensure();
 
-    /* Execute: torch.cuda.get_device_properties(0).total_mem,
-     *          torch.cuda.mem_get_info(0) -> (free, total)        */
-    PyObject* code = PyUnicode_FromString(
-        "import torch\n"
-        "if torch.cuda.is_available():\n"
-        "    free, total = torch.cuda.mem_get_info(0)\n"
-        "    result = (total, free)\n"
-        "else:\n"
-        "    result = (0, 0)\n"
-    );
     PyObject* globals = PyDict_New();
     PyObject* locals = PyDict_New();
     PyObject* builtins = PyEval_GetBuiltins();
@@ -851,8 +841,9 @@ int pymlip_get_gpu_memory(long long* total_bytes, long long* free_bytes) {
     PyObject* ret = PyRun_String(
         "import torch\n"
         "if torch.cuda.is_available():\n"
-        "    free, total = torch.cuda.mem_get_info(0)\n"
-        "    result = (total, free)\n"
+        "    total = torch.cuda.get_device_properties(0).total_mem\n"
+        "    used = torch.cuda.memory_allocated(0)\n"
+        "    result = (total, total - used)\n"
         "else:\n"
         "    result = (0, 0)\n",
         Py_file_input, globals, locals);
@@ -872,7 +863,6 @@ int pymlip_get_gpu_memory(long long* total_bytes, long long* free_bytes) {
 
     Py_DECREF(globals);
     Py_DECREF(locals);
-    Py_XDECREF(code);
     PyGILState_Release(gstate);
 
     return status;
