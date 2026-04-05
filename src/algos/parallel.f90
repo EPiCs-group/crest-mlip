@@ -1089,13 +1089,19 @@ subroutine crest_search_multimd(env,mol,mddats,nsim)
     end if
   end do
 
-!>--- pymlip: load N parallel model copies for GPU parallelism.
-!>    With multiple independent models, OpenMP threads can overlap GPU
-!>    work (PyTorch releases GIL during CUDA kernels).
+!>--- pymlip: load shared model ONCE, propagate handle to all threads.
+!>    Python GIL serializes all calls — multiple handles don't help.
+!>    True parallelism requires separate processes (not OpenMP threads).
   do j = 1,env%calc%ncalculations
     if (env%calc%calcs(j)%id == jobtype%pymlip) then
-      call load_parallel_pymlip_models(env, calculations, T, nsim, j, io)
-      if (io /= 0) return
+      call pymlip_init(env%calc%calcs(j), io)
+      if (io /= 0) then
+        write(stdout,'(a)') '**ERROR** Failed to load shared pymlip model'
+        return
+      end if
+      do i = 1,T
+        calculations(i)%calcs(j)%pymlip_handle = env%calc%calcs(j)%pymlip_handle
+      end do
     end if
   end do
 
@@ -1159,13 +1165,8 @@ subroutine crest_search_multimd(env,mol,mddats,nsim)
         call libtorch_cleanup(calculations(i)%calcs(j))
       end if
       if (calculations(i)%calcs(j)%id == jobtype%pymlip) then
-        if (calculations(i)%calcs(j)%mlip_is_owner) then
-          !> This thread owns its model copy — free it
-          call pymlip_cleanup(calculations(i)%calcs(j))
-        else
-          !> Shared handle — just null the pointer, don't free
-          calculations(i)%calcs(j)%pymlip_handle = c_null_ptr
-        end if
+        calculations(i)%calcs(j)%pymlip_handle = c_null_ptr
+        call pymlip_cleanup(calculations(i)%calcs(j))
       end if
       if (calculations(i)%calcs(j)%id == jobtype%ase_socket) then
         calculations(i)%calcs(j)%socket_handle = c_null_ptr
