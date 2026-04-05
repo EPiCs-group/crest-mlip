@@ -992,9 +992,13 @@ subroutine crest_search_multimd(env,mol,mddats,nsim)
 !*****************************************************
 !* subroutine crest_search_multimd
 !* this runs #nsim MDs on the same structure (mol)
+!*
+!* For pymlip calculators: uses process-based parallelism
+!* (separate CREST worker processes) to bypass Python GIL.
+!* For all others: uses OpenMP thread parallelism.
 !*****************************************************
   use crest_parameters,only:wp,stdout,sep
-  use iso_c_binding,only:c_null_ptr
+  use iso_c_binding,only:c_null_ptr,c_int,c_char,c_null_char
   use crest_data
   use crest_calculator
   use strucrd
@@ -1002,6 +1006,7 @@ subroutine crest_search_multimd(env,mol,mddats,nsim)
   use iomod,only:makedir,directory_exist,remove
   use omp_lib
   use crest_restartlog,only:trackrestart,restart_write_dummy
+  use worker_io_module,only:write_worker_config
   implicit none
   type(systemdata),intent(inout) :: env
   type(mddata) :: mddats(nsim)
@@ -1020,6 +1025,29 @@ subroutine crest_search_multimd(env,mol,mddats,nsim)
   real(wp) :: etmp
   real(wp),allocatable :: grdtmp(:,:)
   type(timer) :: profiler
+
+  !>--- process-based parallelism variables
+  logical :: use_process_parallel
+  integer :: n_workers, batch_start, batch_end, n_batch
+  integer,allocatable :: pids(:), exit_codes(:)
+  integer :: pid, exitstat, n_failed
+  character(len=512) :: progname, config_file, cmd_str
+  type(calcdata) :: worker_calc
+
+  !>--- C interface for process bridge
+  interface
+    function c_spawn_process(cmd) bind(C, name='spawn_process')
+      import :: c_int, c_char
+      character(kind=c_char), intent(in) :: cmd(*)
+      integer(c_int) :: c_spawn_process
+    end function
+    function c_wait_for_process(pid) bind(C, name='wait_for_process')
+      import :: c_int
+      integer(c_int), value, intent(in) :: pid
+      integer(c_int) :: c_wait_for_process
+    end function
+  end interface
+
 !===========================================================!
 !>--- decide wether to skip this call
   if (trackrestart(env)) then
@@ -1036,10 +1064,118 @@ subroutine crest_search_multimd(env,mol,mddats,nsim)
     return
   end if
 
-!>--- prepare calculation containers for parallelization (one per thread)
+!>--- detect if pymlip is used (needs process-based parallelism)
+  use_process_parallel = .false.
+  do j = 1,env%calc%ncalculations
+    if (env%calc%calcs(j)%id == jobtype%pymlip) then
+      use_process_parallel = .true.
+      exit
+    end if
+  end do
+
+!>--- determine thread/worker count
   call new_ompautoset(env,'auto_nested',nsim,T,Tn)
   nested = env%omp_allow_nested
 
+!==========================================================================!
+!> PROCESS-BASED PARALLEL PATH (pymlip — bypasses Python GIL)
+!==========================================================================!
+  if (use_process_parallel .and. T > 1) then
+
+    write(stdout,'(/,1x,a)') 'Using process-based parallelism for pymlip (bypassing GIL)'
+    write(stdout,'(1x,a,i0,a,i0,a)') 'Spawning up to ', T, ' worker processes for ', nsim, ' MTDs'
+
+    !>--- get path to this CREST binary for self-exec
+    call get_command_argument(0, progname)
+
+    !>--- prepare per-worker calc with unique working directories
+    n_workers = min(T, nsim)
+    allocate(pids(n_workers), source=0)
+    allocate(exit_codes(n_workers), source=0)
+
+    !>--- spawn workers in batches of n_workers
+    n_failed = 0
+    do batch_start = 1, nsim, n_workers
+      batch_end = min(batch_start + n_workers - 1, nsim)
+      n_batch = batch_end - batch_start + 1
+
+      write(stdout,'(1x,a,i0,a,i0)') 'Launching batch: MTD ', batch_start, ' to ', batch_end
+
+      !>--- write config files and spawn worker processes
+      do i = batch_start, batch_end
+        j = i - batch_start + 1  ! local index within batch
+
+        !>--- prepare per-worker calculator with unique calcspace
+        worker_calc = env%calc
+        do io = 1, worker_calc%ncalculations
+          if (allocated(worker_calc%calcs(io)%calcspace)) then
+            ex = directory_exist(worker_calc%calcs(io)%calcspace)
+            if (.not.ex) then
+              exitstat = makedir(trim(worker_calc%calcs(io)%calcspace))
+            end if
+            write(atmp,'(a,"_w",i0)') sep, i
+            worker_calc%calcs(io)%calcspace = &
+              env%calc%calcs(io)%calcspace // trim(atmp)
+          end if
+          !>--- null out all handles (worker will init its own)
+          worker_calc%calcs(io)%pymlip_handle = c_null_ptr
+          worker_calc%calcs(io)%libtorch_handle = c_null_ptr
+          worker_calc%calcs(io)%socket_handle = c_null_ptr
+        end do
+
+        !>--- write binary config file
+        write(config_file,'(a,a,a,i0,a)') mdir, sep, '.worker_', i, '.bin'
+        call write_worker_config(trim(config_file), mol, mddats(i), &
+                                 worker_calc, i)
+
+        !>--- build command: crest --worker <config_file> <index>
+        write(cmd_str,'(a,a,a,a,i0)') &
+          trim(progname), ' --worker ', trim(config_file), ' ', i
+
+        !>--- spawn the worker process
+        pids(j) = int(c_spawn_process(trim(cmd_str) // c_null_char))
+        if (pids(j) <= 0) then
+          write(stdout,'(a,i0)') '**WARNING** Failed to spawn worker for MTD ', i
+          n_failed = n_failed + 1
+        else
+          write(stdout,'(1x,a,i0,a,i0)') 'Worker for MTD ', i, ' spawned (PID ', pids(j), ')'
+        end if
+      end do
+
+      !>--- wait for all workers in this batch to finish
+      do i = batch_start, batch_end
+        j = i - batch_start + 1
+        if (pids(j) > 0) then
+          exit_codes(j) = int(c_wait_for_process(int(pids(j), c_int)))
+          if (exit_codes(j) /= 0) then
+            write(stdout,'(a,i0,a,i0)') &
+              '**WARNING** Worker for MTD ', i, ' exited with status ', exit_codes(j)
+            n_failed = n_failed + 1
+          else
+            write(stdout,'(1x,a,i0,a)') 'Worker for MTD ', i, ' completed successfully'
+          end if
+        end if
+      end do
+    end do
+
+    if (n_failed > 0) then
+      write(stdout,'(/,a,i0,a)') '**WARNING** ', n_failed, ' worker(s) failed'
+    end if
+    write(stdout,'(1x,a)') 'All worker processes finished.'
+
+    deallocate(pids, exit_codes)
+
+    !>--- collect trajectories into one (same as OpenMP path)
+    call collect(nsim, mddats)
+    return
+
+  end if
+
+!==========================================================================!
+!> OPENMP THREAD-PARALLEL PATH (libtorch, xtb, gfn-ff, etc.)
+!==========================================================================!
+
+!>--- prepare calculation containers for parallelization (one per thread)
   allocate (calculations(T),source=env%calc)
   allocate (moltmps(T),source=mol)
   allocate (grdtmp(3,mol%nat),source=0.0_wp)
@@ -1090,8 +1226,9 @@ subroutine crest_search_multimd(env,mol,mddats,nsim)
   end do
 
 !>--- pymlip: load shared model ONCE, propagate handle to all threads.
-!>    Python GIL serializes all calls — multiple handles don't help.
+!>    Python GIL serializes all calls -- multiple handles don't help.
 !>    True parallelism requires separate processes (not OpenMP threads).
+!>    This path is only reached when T==1 (single thread fallback).
   do j = 1,env%calc%ncalculations
     if (env%calc%calcs(j)%id == jobtype%pymlip) then
       call pymlip_init(env%calc%calcs(j), io)

@@ -34,6 +34,8 @@ list(APPEND srcs
   "${dir}/search_conformers.f90"
   "${dir}/search_entropy.f90"
   "${dir}/parallel.f90"
+  "${dir}/worker_io.f90"
+  "${dir}/worker_md.f90"
 )
 
 set(srcs ${srcs} PARENT_SCOPE)

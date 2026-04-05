@@ -727,6 +727,22 @@ subroutine parseflags(env,arg,nra)
         env%legacy = .false.
         exit
 
+      case ('-worker')  !> Worker process for parallel MD (self-exec model)
+        env%crestver = crest_worker_md
+        env%preopt = .false.
+        !>--- next arg is the config file path
+        if (nra >= i+1) then
+          env%worker_config = trim(arg(i+1))
+        end if
+        !>--- parse --index N if present
+        if (nra >= i+2) then
+          atmp = adjustl(arg(i+2))
+          if (atmp(1:2) /= '--') then
+            read(atmp, *, iostat=io) env%worker_index
+          end if
+        end if
+        exit
+
       case ('-SANDBOX')
         !>--- IMPLEMENT HERE WHATEVER YOU LIKE, FOR TESTING
         !>-----

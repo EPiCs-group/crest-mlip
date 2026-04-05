@@ -87,6 +87,7 @@ module crest_data
   integer,parameter,public :: crest_ensemblesp = 273
 !>> <<!
   integer,parameter,public :: crest_test       = 456
+  integer,parameter,public :: crest_worker_md  = 500  !> worker process for parallel MD
 
 !>---- tools (variables for env%properties)
   integer,parameter,public :: p_none         =  0
@@ -396,6 +397,10 @@ module crest_data
     character(len=:),allocatable :: wbofile
     character(len=:),allocatable :: atlist
     character(len=:),allocatable :: chargesfilename
+
+    !>--- Worker process mode (for process-based parallel MD)
+    character(len=:),allocatable :: worker_config  !> path to binary config file
+    integer :: worker_index = 0                    !> which simulation this worker runs
 
     !>--- METADYN data
     real(wp) :: hmass
