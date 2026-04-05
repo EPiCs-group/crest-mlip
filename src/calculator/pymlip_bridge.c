@@ -63,9 +63,11 @@ static PyObject* setup_module = NULL;
 
 /* The embedded Python code that creates calculators */
 static const char* SETUP_CODE =
-    "import os\n"
+    "import os, warnings, logging\n"
     "os.environ['TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD'] = '1'\n"
     "os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')\n"
+    "warnings.filterwarnings('ignore')\n"
+    "logging.getLogger().setLevel(logging.ERROR)\n"
     "import sys\n"
     "import numpy as np\n"
     "\n"
@@ -841,6 +843,7 @@ int pymlip_get_gpu_memory(long long* total_bytes, long long* free_bytes) {
     PyObject* ret = PyRun_String(
         "import torch\n"
         "if torch.cuda.is_available():\n"
+        "    torch.cuda.empty_cache()\n"
         "    total = torch.cuda.get_device_properties(0).total_memory\n"
         "    reserved = torch.cuda.memory_reserved(0)\n"
         "    result = (total, total - reserved)\n"
