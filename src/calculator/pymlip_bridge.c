@@ -856,8 +856,13 @@ int pymlip_get_gpu_memory(long long* total_bytes, long long* free_bytes) {
             *total_bytes = PyLong_AsLongLong(PyTuple_GET_ITEM(result, 0));
             *free_bytes = PyLong_AsLongLong(PyTuple_GET_ITEM(result, 1));
             status = 0;
+        } else {
+            fprintf(stderr, "[pymlip_get_gpu_memory] result extraction failed: "
+                    "result=%p tuple=%d\n", (void*)result,
+                    result ? PyTuple_Check(result) : -1);
         }
     } else {
+        PyErr_Print();
         PyErr_Clear();
     }
 
