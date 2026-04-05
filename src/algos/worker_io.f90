@@ -70,14 +70,11 @@ subroutine write_worker_config(filename, mol, mddat, calc, worker_index)
   call write_string(u, mddat%trajectoryfile)
   call write_string(u, mddat%restartfile)
 
-  !>--- SHAKE data
-  write(u) mddat%shk%initialized
+  !>--- SHAKE settings (only mode, not full data)
+  !>    Worker will re-initialize SHAKE from scratch via init_shake()
+  !>    called inside dynamics(). This avoids serializing conslist,
+  !>    distcons, workspace arrays, and the freezeptr pointer.
   write(u) mddat%shk%shake_mode
-  write(u) mddat%shk%ncons
-  if (mddat%shk%ncons > 0) then
-    write(u) mddat%shk%conslist(1:2, 1:mddat%shk%ncons)
-    write(u) mddat%shk%distcons(1:mddat%shk%ncons)
-  end if
 
   !>--- MTD potentials
   write(u) mddat%npot
@@ -203,20 +200,13 @@ subroutine read_worker_config(filename, mol, mddat, calc, worker_index, iostat)
   call read_string(u, mddat%trajectoryfile)
   call read_string(u, mddat%restartfile)
 
-  !>--- SHAKE data
-  read(u) mddat%shk%initialized
+  !>--- SHAKE settings
+  !>    Only shake_mode is serialized. Worker lets dynamics() -> init_shake()
+  !>    re-derive constraints from molecule geometry (needs no WBO for mode 1).
   read(u) mddat%shk%shake_mode
-  read(u) mddat%shk%ncons
-  mddat%nshake = mddat%shk%ncons
-  if (mddat%shk%ncons > 0) then
-    allocate(mddat%shk%conslist(2, mddat%shk%ncons))
-    allocate(mddat%shk%distcons(mddat%shk%ncons))
-    read(u) mddat%shk%conslist(1:2, 1:mddat%shk%ncons)
-    read(u) mddat%shk%distcons(1:mddat%shk%ncons)
-    !>--- allocate SHAKE workspace arrays (normally done by init_shake)
-    allocate(mddat%shk%dro(3, mddat%shk%ncons), source=0.0_wp)
-    allocate(mddat%shk%dr(4, mddat%shk%ncons), source=0.0_wp)
-  end if
+  mddat%shk%initialized = .false.  ! force re-init in dynamics()
+  mddat%shk%ncons = 0
+  mddat%nshake = 0
 
   !>--- MTD potentials
   read(u) mddat%npot
