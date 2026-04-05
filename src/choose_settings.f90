@@ -186,26 +186,28 @@ subroutine md_length_setup(env)
     env%metadlist(:) = ceiling(env%mdtime)
   endif
 
-!>-- Cap optimization level for MLIP calculators.
-!>   MLIP gradients have inherent numerical noise (~5e-4 to 4e-3 Eh/a0)
-!>   that prevents convergence at normal/tight/vtight thresholds designed
-!>   for xTB. Benchmarks show 99.9% opt success at "loose" (gthr=4e-3)
-!>   but only 8% at "normal" (gthr=1e-3) for UMA on a 100-atom Ni complex.
-!>   Cap at "loose" (optlev=-1): ethr=5e-5 Eh, gthr=4e-3 Eh/a0.
+!>-- Detect MLIP calculators for optimizer defaults.
   has_mlip = .false.
   do jj = 1, env%calc%ncalculations
     if (env%calc%calcs(jj)%id == jobtype%libtorch) has_mlip = .true.
     if (env%calc%calcs(jj)%id == jobtype%pymlip)   has_mlip = .true.
     if (env%calc%calcs(jj)%id == jobtype%ase_socket) has_mlip = .true.
   end do
-  if (has_mlip .and. env%optlev > -1.0_wp) then
-    write(stdout,'(1x,a,f4.1,a)') &
-      'Note: Capping optlev from ',env%optlev,' to -1.0 (loose) for MLIP calculator.'
+!>-- Switch to RFO (Cartesian) optimizer for MLIP calculators.
+!>   ANCOPT uses a model Hessian in internal coordinates that causes
+!>   oscillations with MLIP potentials (gradient bouncing 0.03-0.7 Eh/a0).
+!>   RFO in Cartesian coordinates converges reliably.
+!>   Only override if user hasn't explicitly set opt_engine.
+  if (has_mlip) then
+    do jj = 1, env%calc%ncalculations
+      if (env%calc%calcs(jj)%opt_engine == 0) then
+        env%calc%calcs(jj)%opt_engine = 2
+      end if
+    end do
     write(stdout,'(1x,a)') &
-      '      MLIP gradient noise floor (~1e-3 Eh/a0) prevents convergence at'
+      'Note: Using RFO (Cartesian) optimizer for MLIP calculator.'
     write(stdout,'(1x,a)') &
-      '      normal/tight thresholds. Override with optlev="normal" in TOML.'
-    env%optlev = -1.0_wp
+      '      Override with opt_engine="ancopt" in TOML if desired.'
   end if
 
   return
