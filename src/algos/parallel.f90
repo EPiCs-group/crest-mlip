@@ -1089,17 +1089,13 @@ subroutine crest_search_multimd(env,mol,mddats,nsim)
     end if
   end do
 
-!>--- pymlip: load shared model ONCE, propagate handle to all threads
+!>--- pymlip: load N parallel model copies for GPU parallelism.
+!>    With multiple independent models, OpenMP threads can overlap GPU
+!>    work (PyTorch releases GIL during CUDA kernels).
   do j = 1,env%calc%ncalculations
     if (env%calc%calcs(j)%id == jobtype%pymlip) then
-      call pymlip_init(env%calc%calcs(j), io)
-      if (io /= 0) then
-        write(stdout,'(a)') '**ERROR** Failed to load shared pymlip model'
-        return
-      end if
-      do i = 1,T
-        calculations(i)%calcs(j)%pymlip_handle = env%calc%calcs(j)%pymlip_handle
-      end do
+      call load_parallel_pymlip_models(env, calculations, T, nsim, j, io)
+      if (io /= 0) return
     end if
   end do
 
@@ -1163,8 +1159,13 @@ subroutine crest_search_multimd(env,mol,mddats,nsim)
         call libtorch_cleanup(calculations(i)%calcs(j))
       end if
       if (calculations(i)%calcs(j)%id == jobtype%pymlip) then
-        calculations(i)%calcs(j)%pymlip_handle = c_null_ptr
-        call pymlip_cleanup(calculations(i)%calcs(j))
+        if (calculations(i)%calcs(j)%mlip_is_owner) then
+          !> This thread owns its model copy — free it
+          call pymlip_cleanup(calculations(i)%calcs(j))
+        else
+          !> Shared handle — just null the pointer, don't free
+          calculations(i)%calcs(j)%pymlip_handle = c_null_ptr
+        end if
       end if
       if (calculations(i)%calcs(j)%id == jobtype%ase_socket) then
         calculations(i)%calcs(j)%socket_handle = c_null_ptr
@@ -1709,4 +1710,96 @@ subroutine parallel_md_finish_printout(MD,vz,io,profiler)
 
 end subroutine parallel_md_finish_printout
 !========================================================================================!
+
+!========================================================================================!
+subroutine load_parallel_pymlip_models(env, calculations, T, nsim, jcalc, iostat)
+!*************************************************************
+!* Load N parallel pymlip model copies for GPU-parallel MD.
+!* Measures GPU memory footprint of the first model, then
+!* loads as many additional copies as GPU memory allows.
+!*************************************************************
+  use crest_parameters, only: wp, stdout
+  use iso_c_binding, only: c_null_ptr
+  use crest_data
+  use crest_calculator
+  use calc_pymlip, only: pymlip_init, pymlip_get_gpu_memory_f
+  implicit none
+  type(systemdata), intent(inout) :: env
+  type(calcdata), intent(inout) :: calculations(:)
+  integer, intent(in) :: T, nsim, jcalc
+  integer, intent(out) :: iostat
+
+  integer :: n_par, i, k, io, mem_io
+  integer(8) :: gpu_total, gpu_free_before, gpu_free_after, footprint
+
+  iostat = 0
+
+  !>--- Measure GPU memory before loading
+  call pymlip_get_gpu_memory_f(gpu_total, gpu_free_before, mem_io)
+
+  !>--- Load first model on env%calc (master copy)
+  call pymlip_init(env%calc%calcs(jcalc), io)
+  if (io /= 0) then
+    write(stdout,'(a)') '**ERROR** Failed to load pymlip model'
+    iostat = 1
+    return
+  end if
+
+  !>--- Measure GPU memory after loading + dummy forward pass
+  call pymlip_get_gpu_memory_f(gpu_total, gpu_free_after, mem_io)
+
+  !>--- Estimate per-model footprint
+  footprint = 0
+  if (mem_io == 0 .and. gpu_free_before > gpu_free_after) then
+    footprint = gpu_free_before - gpu_free_after
+    env%calc%calcs(jcalc)%mlip_model_footprint = footprint
+  end if
+
+  !>--- Determine number of parallel model copies
+  n_par = env%calc%calcs(jcalc)%mlip_n_parallel
+  if (n_par <= 0 .and. footprint > 0 .and. gpu_free_after > 0) then
+    !> Auto: how many more copies fit? (20% safety margin per copy)
+    n_par = 1 + int(gpu_free_after / (footprint * 12 / 10))
+    n_par = max(1, min(n_par, T, nsim))
+  else if (n_par <= 0) then
+    n_par = 1
+  end if
+  n_par = min(n_par, T)
+
+  if (footprint > 0) then
+    write(stdout,'(1x,a,i0,a)') &
+      'GPU parallel MD: loading ',n_par,' MLIP model copy(ies)'
+    write(stdout,'(1x,a,i0,a,i0,a,i0,a)') &
+      '  GPU: ',gpu_total/(1024*1024),' MB total, ', &
+      gpu_free_after/(1024*1024),' MB free, ', &
+      footprint/(1024*1024),' MB/model'
+  end if
+
+  !>--- First thread gets the master handle (env owns it)
+  calculations(1)%calcs(jcalc)%pymlip_handle = env%calc%calcs(jcalc)%pymlip_handle
+  calculations(1)%calcs(jcalc)%mlip_is_owner = .false.
+
+  !>--- Load independent copies for threads 2..n_par
+  do i = 2, n_par
+    call pymlip_init(calculations(i)%calcs(jcalc), io)
+    if (io /= 0) then
+      write(stdout,'(a,i0,a)') &
+        '  WARNING: Model copy ',i,' failed, sharing handle instead'
+      calculations(i)%calcs(jcalc)%pymlip_handle = &
+        env%calc%calcs(jcalc)%pymlip_handle
+      calculations(i)%calcs(jcalc)%mlip_is_owner = .false.
+    else
+      calculations(i)%calcs(jcalc)%mlip_is_owner = .true.
+    end if
+  end do
+
+  !>--- Remaining threads share handles (round-robin)
+  do i = n_par+1, T
+    k = mod(i-1, n_par) + 1
+    calculations(i)%calcs(jcalc)%pymlip_handle = &
+      calculations(k)%calcs(jcalc)%pymlip_handle
+    calculations(i)%calcs(jcalc)%mlip_is_owner = .false.
+  end do
+
+end subroutine load_parallel_pymlip_models
 !========================================================================================!

@@ -386,6 +386,12 @@ contains !> MODULE PROCEDURES START HERE
       !> Number of GPUs for multi-GPU batched inference.  0=auto-detect (cap 2).
       job%mlip_ngpus = kv%value_i
 
+    case ('n_parallel','n_parallel_models','parallel_models')
+      !> Number of independent model copies for parallel MD.
+      !> 0=auto-detect from GPU memory.  Each copy enables one more
+      !> truly parallel MTD trajectory on GPU.
+      job%mlip_n_parallel = kv%value_i
+
     case ('host','socket_host')
       !> Hostname for ASE socket server (default: 127.0.0.1)
       job%socket_host = kv%value_c

@@ -823,6 +823,61 @@ void pymlip_finalize_python(void) {
     python_initialized = 0;
 }
 
+
+int pymlip_get_gpu_memory(long long* total_bytes, long long* free_bytes) {
+    if (!python_initialized) {
+        *total_bytes = 0;
+        *free_bytes = 0;
+        return 1;
+    }
+
+    PyGILState_STATE gstate = PyGILState_Ensure();
+
+    /* Execute: torch.cuda.get_device_properties(0).total_mem,
+     *          torch.cuda.mem_get_info(0) -> (free, total)        */
+    PyObject* code = PyUnicode_FromString(
+        "import torch\n"
+        "if torch.cuda.is_available():\n"
+        "    free, total = torch.cuda.mem_get_info(0)\n"
+        "    result = (total, free)\n"
+        "else:\n"
+        "    result = (0, 0)\n"
+    );
+    PyObject* globals = PyDict_New();
+    PyObject* locals = PyDict_New();
+    PyObject* builtins = PyEval_GetBuiltins();
+    PyDict_SetItemString(globals, "__builtins__", builtins);
+
+    PyObject* ret = PyRun_String(
+        "import torch\n"
+        "if torch.cuda.is_available():\n"
+        "    free, total = torch.cuda.mem_get_info(0)\n"
+        "    result = (total, free)\n"
+        "else:\n"
+        "    result = (0, 0)\n",
+        Py_file_input, globals, locals);
+
+    int status = 1;
+    if (ret) {
+        Py_DECREF(ret);
+        PyObject* result = PyDict_GetItemString(locals, "result");
+        if (result && PyTuple_Check(result) && PyTuple_Size(result) == 2) {
+            *total_bytes = PyLong_AsLongLong(PyTuple_GET_ITEM(result, 0));
+            *free_bytes = PyLong_AsLongLong(PyTuple_GET_ITEM(result, 1));
+            status = 0;
+        }
+    } else {
+        PyErr_Clear();
+    }
+
+    Py_DECREF(globals);
+    Py_DECREF(locals);
+    Py_XDECREF(code);
+    PyGILState_Release(gstate);
+
+    return status;
+}
+
 #else /* !WITH_PYMLIP */
 
 /* Stub implementations when compiled without Python support */
@@ -879,5 +934,8 @@ int pymlip_engrad_batch(pymlip_handle_t handle, int batch_size, int nat,
 
 void pymlip_free(pymlip_handle_t handle) { (void)handle; }
 void pymlip_finalize_python(void) {}
+int pymlip_get_gpu_memory(long long* total_bytes, long long* free_bytes) {
+    *total_bytes = 0; *free_bytes = 0; return 1;
+}
 
 #endif /* WITH_PYMLIP */

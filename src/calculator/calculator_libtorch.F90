@@ -45,6 +45,7 @@ module calc_libtorch
   public :: libtorch_engrad_batch_multigpu_f
   public :: libtorch_load_shared_on_device_f
   public :: libtorch_get_cuda_device_count_f
+  public :: libtorch_get_gpu_memory_f
 
 #ifdef WITH_LIBTORCH
 
@@ -182,6 +183,14 @@ module calc_libtorch
       import :: c_int
       integer(c_int) :: c_libtorch_get_cuda_device_count
     end function c_libtorch_get_cuda_device_count
+
+    function c_libtorch_get_gpu_memory(total_bytes, free_bytes) &
+        bind(C, name="libtorch_get_gpu_memory")
+      import :: c_int, c_long_long
+      integer(c_long_long), intent(out) :: total_bytes
+      integer(c_long_long), intent(out) :: free_bytes
+      integer(c_int) :: c_libtorch_get_gpu_memory
+    end function c_libtorch_get_gpu_memory
   end interface
 
 #endif
@@ -698,6 +707,26 @@ contains
     ndevices = 0
 #endif
   end function libtorch_get_cuda_device_count_f
+
+
+  !> Query GPU memory via CUDA runtime API.
+  subroutine libtorch_get_gpu_memory_f(total_bytes, free_bytes, iostat)
+    implicit none
+    integer(8), intent(out) :: total_bytes, free_bytes
+    integer, intent(out) :: iostat
+#ifdef WITH_LIBTORCH
+    integer(c_int) :: rc
+    integer(c_long_long) :: total_c, free_c
+    rc = c_libtorch_get_gpu_memory(total_c, free_c)
+    total_bytes = int(total_c, 8)
+    free_bytes = int(free_c, 8)
+    iostat = int(rc)
+#else
+    total_bytes = 0
+    free_bytes = 0
+    iostat = 1
+#endif
+  end subroutine libtorch_get_gpu_memory_f
 
 
 end module calc_libtorch

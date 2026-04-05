@@ -38,6 +38,7 @@ module calc_pymlip
 
   public :: pymlip_engrad, pymlip_engrad_batch_f
   public :: pymlip_init, pymlip_cleanup, pymlip_finalize
+  public :: pymlip_get_gpu_memory_f
 
 #ifdef WITH_PYMLIP
 
@@ -115,6 +116,14 @@ module calc_pymlip
 
     subroutine c_pymlip_finalize() bind(C, name="pymlip_finalize_python")
     end subroutine c_pymlip_finalize
+
+    function c_pymlip_get_gpu_memory(total_bytes, free_bytes) &
+        bind(C, name="pymlip_get_gpu_memory")
+      import :: c_int, c_long_long
+      integer(c_long_long), intent(out) :: total_bytes
+      integer(c_long_long), intent(out) :: free_bytes
+      integer(c_int) :: c_pymlip_get_gpu_memory
+    end function c_pymlip_get_gpu_memory
   end interface
 
 #endif
@@ -454,5 +463,27 @@ contains
 #endif
 
   end subroutine pymlip_engrad_batch_f
+
+
+  !> Query GPU memory via PyTorch (torch.cuda.mem_get_info).
+  !> Returns total and free GPU memory in bytes.
+  !> iostat=0 on success, 1 if CUDA unavailable or not compiled.
+  subroutine pymlip_get_gpu_memory_f(total_bytes, free_bytes, iostat)
+    implicit none
+    integer(8), intent(out) :: total_bytes, free_bytes
+    integer, intent(out) :: iostat
+#ifdef WITH_PYMLIP
+    integer(c_int) :: rc
+    integer(c_long_long) :: total_c, free_c
+    rc = c_pymlip_get_gpu_memory(total_c, free_c)
+    total_bytes = int(total_c, 8)
+    free_bytes = int(free_c, 8)
+    iostat = int(rc)
+#else
+    total_bytes = 0
+    free_bytes = 0
+    iostat = 1
+#endif
+  end subroutine pymlip_get_gpu_memory_f
 
 end module calc_pymlip

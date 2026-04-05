@@ -127,6 +127,14 @@ void pymlip_free(pymlip_handle_t handle);
  */
 void pymlip_finalize_python(void);
 
+/*
+ * Query GPU memory via PyTorch (torch.cuda).
+ * Returns 0 on success, non-zero if CUDA unavailable.
+ * total_bytes: total GPU memory in bytes
+ * free_bytes:  available GPU memory in bytes (total - allocated)
+ */
+int pymlip_get_gpu_memory(long long* total_bytes, long long* free_bytes);
+
 #ifdef __cplusplus
 }
 #endif

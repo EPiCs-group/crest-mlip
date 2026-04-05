@@ -1334,6 +1334,26 @@ int libtorch_has_mps(void)
 #endif
 }
 
+
+int libtorch_get_gpu_memory(long long* total_bytes, long long* free_bytes)
+{
+    *total_bytes = 0;
+    *free_bytes = 0;
+    if (!torch::cuda::is_available()) return 1;
+    try {
+        size_t free_mem = 0, total_mem = 0;
+        /* Use PyTorch's CUDA memory info (wraps cudaMemGetInfo) */
+        auto device = torch::Device(torch::kCUDA, 0);
+        c10::cuda::CUDAGuard guard(device);
+        cudaMemGetInfo(&free_mem, &total_mem);
+        *total_bytes = (long long)total_mem;
+        *free_bytes = (long long)free_mem;
+        return 0;
+    } catch (...) {
+        return 1;
+    }
+}
+
 } /* extern "C" */
 
 #else /* !WITH_LIBTORCH */
@@ -1408,6 +1428,9 @@ void libtorch_free(libtorch_handle_t) {}
 void libtorch_shared_free_all(void) {}
 int libtorch_has_cuda(void) { return 0; }
 int libtorch_has_mps(void) { return 0; }
+int libtorch_get_gpu_memory(long long* total_bytes, long long* free_bytes) {
+    *total_bytes = 0; *free_bytes = 0; return 1;
+}
 
 } /* extern "C" */
 

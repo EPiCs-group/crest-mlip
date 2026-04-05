@@ -220,6 +220,9 @@ module calc_type
     integer :: mlip_batch_size = 0      !> structures per GPU batch (0=auto from nat)
     integer :: mlip_aten_threads = 0    !> ATen intra-op threads (0=auto: T for CPU, 1 for GPU)
     integer :: mlip_ngpus = 0           !> GPUs for multi-GPU batching (0=auto-detect, cap 2)
+    integer :: mlip_n_parallel = 0      !> parallel model copies for MD (0=auto from GPU mem)
+    integer(8) :: mlip_model_footprint = 0  !> GPU memory per model copy (bytes, measured at init)
+    logical :: mlip_is_owner = .true.   !> true if this calc owns its handle (should free it)
 
     !>--- pymlip: embedded CPython inference (UMA via fairchem, MACE via mace-torch)
     !>    Python interpreter is initialized once per process.  Each handle is
