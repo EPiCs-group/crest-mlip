@@ -84,12 +84,14 @@ crest molecule.xyz --input examples/conformer_search_mace_libtorch.toml
 
 - **Three MLIP calculator backends** — each targeting a different use case:
   - **libtorch**: loads TorchScript-exported models (`.pt`) and runs inference entirely in C++ via the PyTorch C API. No Python runtime needed at all. This is the fastest path for production GPU runs. Models are exported with `scripts/export_model.py` or `scripts/export_mace.py`, which bake graph construction, neighbor lists, and unit conversions into the TorchScript module.
-  - **pymlip**: embeds the CPython interpreter inside the Fortran process and calls UMA (`fairchem-core`) or MACE (`mace-torch`) calculators directly in-memory. Avoids TCP socket overhead while reusing all Python model infrastructure. The GIL is acquired per-call, making it thread-safe for OpenMP.
+  - **pymlip**: embeds the CPython interpreter inside the Fortran process and calls UMA (`fairchem-core`) or MACE (`mace-torch`) calculators directly in-memory. Avoids TCP socket overhead while reusing all Python model infrastructure. The GIL is acquired per-call; for parallel MD, separate worker processes are spawned to bypass this limitation (see process-based parallel MD below).
   - **ASE socket**: connects over TCP to an external Python server (`src/python_server/crest_ase_server.py`) wrapping any ASE-compatible calculator. The most flexible option — works with any model or code that has an ASE interface, at the cost of serialization overhead.
 
 - **GPU batched inference** — CREST's conformer search generates hundreds of independent structures per iteration. Instead of evaluating them one-by-one through OpenMP threads (which would serialize on a single GPU anyway), the batched path in `parallel.f90` collects all structures, pads them to equal length, and sends them through the model in a single batched forward pass. Two sub-paths exist: single-GPU (one batch) and multi-GPU (round-robin distribution across `ngpus` devices). Batch size is auto-tuned from atom count if not set explicitly. This typically gives 5-20x speedup over per-structure evaluation.
 
 - **Shared model loading** — MLIP models can be 100 MB–2 GB. Without sharing, each OpenMP thread would load its own copy, quickly exhausting GPU memory. Instead, the master thread loads the model once and broadcasts the handle to all workers. For libtorch this uses a mutex-protected shared pointer; for pymlip, the GIL naturally serializes access to a single Python object. Workers that receive a shared handle skip cleanup on exit (only the owner deallocates).
+
+- **Process-based parallel MD for pymlip** — Python's Global Interpreter Lock (GIL) serializes all embedded Python calls, making OpenMP thread parallelism ineffective for pymlip calculators. To achieve true parallelism, CREST automatically detects pymlip and switches from OpenMP threads to a process-based model: the parent writes per-worker binary configs (molecule + MD settings + calculator parameters), then spawns N independent CREST worker processes (`crest --worker <config> <index>`), each with its own Python interpreter and CUDA context. Workers load the MLIP model, run their assigned metadynamics trajectory, write the trajectory file, and exit. The parent waits for all workers and merges trajectories as before. With 8 worker processes on an A100 GPU, 14 MTD simulations complete in 2 batches instead of 14 serial runs — a ~7× speedup. Non-pymlip calculators (libtorch, xTB, GFN-FF) continue using the standard OpenMP path.
 
 - **WBO fallback cascade for MLIP calculators** — CREST's metadynamics relies on Wiberg Bond Orders (WBOs) in two places: (1) SHAKE bond constraints use WBOs to identify which bonds to constrain (threshold > 0.5), and (2) the `flexi()` function uses WBOs to estimate molecular flexibility, which controls metadynamics simulation length. MLIP calculators provide only energy and gradient — no WBOs. To fill this gap, we implemented a cascade: first try GFN2-xTB (produces continuous WBOs of 1.0/1.5/2.0, most accurate), then fall back to GFN-FF topology (binary 0/1 WBOs from neighbor list only, ~0.01s, no singlepoint needed), then fall back to a size-based default (flexibility = 0.5). SHAKE has an additional safety net: if no WBOs are available at all, it degrades from mode 2 (all-bond constraints) to mode 1 (X-H bonds only, which need no WBOs). GFN-FF is auto-enabled in the build system (`WITH_GFNFF`) whenever MLIP support is compiled in.
 
@@ -124,16 +126,28 @@ All keys go inside `[[calculation.level]]` blocks.
 | `port` | integer | `6789` | ASE socket server TCP port |
 | `debug` | `true`/`false` | `false` | Per-call timing output |
 
+### Optimization with MLIPs
+
+> **Note:** The default ANCOPT optimizer uses a model Hessian in internal coordinates that
+> can oscillate with MLIP gradient noise. For MLIP calculators, use the RFO optimizer:
+
+```toml
+[calculation]
+opt_engine = "rfo"
+```
+
 ### Example TOML
 
 ```toml
 runtype = "imtd-gc"
-threads = 16
+threads = 8
+
+[calculation]
+opt_engine = "rfo"
 
 [[calculation.level]]
 method     = "uma"
 device     = "cuda"
-batch_size = 16
 ```
 
 ---
