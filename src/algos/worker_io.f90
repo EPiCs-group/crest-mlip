@@ -213,6 +213,9 @@ subroutine read_worker_config(filename, mol, mddat, calc, worker_index, iostat)
     allocate(mddat%shk%distcons(mddat%shk%ncons))
     read(u) mddat%shk%conslist(1:2, 1:mddat%shk%ncons)
     read(u) mddat%shk%distcons(1:mddat%shk%ncons)
+    !>--- allocate SHAKE workspace arrays (normally done by init_shake)
+    allocate(mddat%shk%dro(3, mddat%shk%ncons), source=0.0_wp)
+    allocate(mddat%shk%dr(4, mddat%shk%ncons), source=0.0_wp)
   end if
 
   !>--- MTD potentials
