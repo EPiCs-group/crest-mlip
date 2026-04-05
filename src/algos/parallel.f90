@@ -1753,10 +1753,16 @@ subroutine load_parallel_pymlip_models(env, calculations, T, nsim, jcalc, iostat
   write(stdout,'(1x,a,i0,a,i0)') &
     'GPU mem query (after model): io=',mem_io,' free_MB=',gpu_free_after/(1024*1024)
 
-  !>--- Estimate per-model footprint
+  !>--- Estimate per-model footprint.
+  !>    Use delta if available; otherwise estimate from total reserved
+  !>    (gpu_total - gpu_free gives all PyTorch-reserved memory = ~1 model).
   footprint = 0
-  if (mem_io == 0 .and. gpu_free_before > gpu_free_after) then
-    footprint = gpu_free_before - gpu_free_after
+  if (mem_io == 0) then
+    if (gpu_free_before > gpu_free_after) then
+      footprint = gpu_free_before - gpu_free_after
+    else
+      footprint = gpu_total - gpu_free_after  !> total reserved ≈ 1 model
+    end if
     env%calc%calcs(jcalc)%mlip_model_footprint = int(footprint / (1024*1024))
   end if
 
