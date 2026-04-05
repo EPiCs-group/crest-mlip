@@ -1736,6 +1736,9 @@ subroutine load_parallel_pymlip_models(env, calculations, T, nsim, jcalc, iostat
 
   !>--- Measure GPU memory before loading
   call pymlip_get_gpu_memory_f(gpu_total, gpu_free_before, mem_io)
+  write(stdout,'(1x,a,i0,a,i0,a,i0)') &
+    'GPU mem query (before model): io=',mem_io, &
+    ' total_MB=',gpu_total/(1024*1024),' free_MB=',gpu_free_before/(1024*1024)
 
   !>--- Load first model on env%calc (master copy)
   call pymlip_init(env%calc%calcs(jcalc), io)
@@ -1745,8 +1748,10 @@ subroutine load_parallel_pymlip_models(env, calculations, T, nsim, jcalc, iostat
     return
   end if
 
-  !>--- Measure GPU memory after loading + dummy forward pass
+  !>--- Measure GPU memory after loading
   call pymlip_get_gpu_memory_f(gpu_total, gpu_free_after, mem_io)
+  write(stdout,'(1x,a,i0,a,i0)') &
+    'GPU mem query (after model): io=',mem_io,' free_MB=',gpu_free_after/(1024*1024)
 
   !>--- Estimate per-model footprint
   footprint = 0
@@ -1766,6 +1771,8 @@ subroutine load_parallel_pymlip_models(env, calculations, T, nsim, jcalc, iostat
   end if
   n_par = min(n_par, T)
 
+  write(stdout,'(1x,a,i0,a,i0,a)') &
+    'GPU parallel MD: n_par=',n_par,' footprint_MB=',footprint/(1024*1024)
   if (footprint > 0) then
     write(stdout,'(1x,a,i0,a)') &
       'GPU parallel MD: loading ',n_par,' MLIP model copy(ies)'
