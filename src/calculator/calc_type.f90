@@ -172,7 +172,7 @@ module calc_type
     integer  :: ngrid = 1202           !> lebedev grid points per atom
     real(wp) :: extpressure = 0.0_wp   !> hydorstatic pressure in Gpa
     real(wp) :: proberad = 1.5_wp      !> proberadius in Angstroem
-    integer  :: vdwset = 0             !> Type of VDW radii -> 0 (default) D3, 1 -> Bondi
+    integer  :: vdwset = 0             !> Type of VDW radii → 0 (default) D3, 1 → Bondi
     real(wp) :: pvradscal = 1.0_wp     !> Scaling factor for SAS radii
     type(libpvol_calculator),allocatable :: libpvol
 
@@ -221,7 +221,7 @@ module calc_type
     integer :: mlip_aten_threads = 0    !> ATen intra-op threads (0=auto: T for CPU, 1 for GPU)
     integer :: mlip_ngpus = 0           !> GPUs for multi-GPU batching (0=auto-detect, cap 2)
     integer :: mlip_n_parallel = 0      !> parallel model copies for MD (0=auto from GPU mem)
-    integer(8) :: mlip_model_footprint = 0  !> GPU memory per model copy (bytes, measured at init)
+    integer :: mlip_model_footprint = 0 !> GPU memory per model copy (MB, measured at init)
     logical :: mlip_is_owner = .true.   !> true if this calc owns its handle (should free it)
 
     !>--- pymlip: embedded CPython inference (UMA via fairchem, MACE via mace-torch)

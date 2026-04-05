@@ -1752,7 +1752,7 @@ subroutine load_parallel_pymlip_models(env, calculations, T, nsim, jcalc, iostat
   footprint = 0
   if (mem_io == 0 .and. gpu_free_before > gpu_free_after) then
     footprint = gpu_free_before - gpu_free_after
-    env%calc%calcs(jcalc)%mlip_model_footprint = footprint
+    env%calc%calcs(jcalc)%mlip_model_footprint = int(footprint / (1024*1024))
   end if
 
   !>--- Determine number of parallel model copies
