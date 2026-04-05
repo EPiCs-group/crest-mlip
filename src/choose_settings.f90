@@ -30,7 +30,6 @@ subroutine md_length_setup(env)
   use crest_parameters
   use crest_data
   use crest_calculator, only: jobtype
-  use calc_type, only: calculation_settings
   use strucrd
   use zdata, only:readwbo
   use gfnff_api,only: gfnff_get_topology_wbos
@@ -194,21 +193,12 @@ subroutine md_length_setup(env)
     if (env%calc%calcs(jj)%id == jobtype%pymlip)   has_mlip = .true.
     if (env%calc%calcs(jj)%id == jobtype%ase_socket) has_mlip = .true.
   end do
-!>-- Switch to RFO (Cartesian) optimizer for MLIP calculators.
-!>   ANCOPT uses a model Hessian in internal coordinates that causes
-!>   oscillations with MLIP potentials (gradient bouncing 0.03-0.7 Eh/a0).
-!>   RFO in Cartesian coordinates converges reliably.
-!>   Only override if user hasn't explicitly set opt_engine.
+!>-- Warn about optimizer choice for MLIP calculators.
   if (has_mlip) then
-    do jj = 1, env%calc%ncalculations
-      if (env%calc%calcs(jj)%opt_engine == 0) then
-        env%calc%calcs(jj)%opt_engine = 2
-      end if
-    end do
     write(stdout,'(1x,a)') &
-      'Note: Using RFO (Cartesian) optimizer for MLIP calculator.'
+      'Note: MLIP detected. Consider using opt_engine="rfo" in TOML.'
     write(stdout,'(1x,a)') &
-      '      Override with opt_engine="ancopt" in TOML if desired.'
+      '      ANCOPT (default) may oscillate with MLIP gradients.'
   end if
 
   return
