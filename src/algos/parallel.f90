@@ -1725,8 +1725,8 @@ subroutine load_parallel_pymlip_models(env, calculations, T, nsim, jcalc, iostat
   use calc_pymlip, only: pymlip_init, pymlip_get_gpu_memory_f
   implicit none
   type(systemdata), intent(inout) :: env
-  type(calcdata), intent(inout) :: calculations(:)
   integer, intent(in) :: T, nsim, jcalc
+  type(calcdata), intent(inout) :: calculations(T)
   integer, intent(out) :: iostat
 
   integer :: n_par, i, k, io, mem_io
