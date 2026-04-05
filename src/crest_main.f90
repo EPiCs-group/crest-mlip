@@ -56,6 +56,21 @@ program CREST
   do i = 1,args
     call getarg(i,arg(i))
   end do
+
+!>--- Worker mode: intercept BEFORE parseflags to avoid full initialization.
+!>    Worker processes are spawned by the parent with:
+!>      crest --worker <config_file> <index>
+!>    They must bypass parseflags entirely (no TOML parsing, no coord reading).
+  do i = 1,args
+    if (trim(arg(i)) == '--worker' .or. trim(arg(i)) == '-worker') then
+      if (args >= i+1) env%worker_config = trim(arg(i+1))
+      if (args >= i+2) read(arg(i+2), *, iostat=io) env%worker_index
+      deallocate(arg)
+      call crest_worker_run(env)
+      stop
+    end if
+  end do
+
   call parseflags(env,arg,args)
   deallocate (arg)
   call restart_save_env(env)

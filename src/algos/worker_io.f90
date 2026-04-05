@@ -109,9 +109,11 @@ subroutine write_worker_config(filename, mol, mddat, calc, worker_index)
   write(u) calc%ncalculations
   write(u) calc%id
   write(u) calc%optlev
-  write(u) calc%nfreeze
   if (calc%nfreeze > 0 .and. allocated(calc%freezelist)) then
+    write(u) calc%nfreeze
     write(u) calc%freezelist
+  else
+    write(u) 0
   end if
 
   !>--- Constraints
