@@ -842,8 +842,8 @@ int pymlip_get_gpu_memory(long long* total_bytes, long long* free_bytes) {
         "import torch\n"
         "if torch.cuda.is_available():\n"
         "    total = torch.cuda.get_device_properties(0).total_memory\n"
-        "    used = torch.cuda.memory_allocated(0)\n"
-        "    result = (total, total - used)\n"
+        "    reserved = torch.cuda.memory_reserved(0)\n"
+        "    result = (total, total - reserved)\n"
         "else:\n"
         "    result = (0, 0)\n",
         Py_file_input, globals, locals);
