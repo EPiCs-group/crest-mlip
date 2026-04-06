@@ -273,6 +273,8 @@ class MACEWrapper(torch.nn.Module):
             "ptr": ptr,
             "cell": cell,
             "head": head,
+            "total_spin": torch.zeros(1, dtype=compute_dtype, device=device),
+            "total_charge": torch.zeros(1, dtype=compute_dtype, device=device),
         }
 
         output = self.model(data, training=False)
