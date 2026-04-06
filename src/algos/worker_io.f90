@@ -579,8 +579,11 @@ subroutine read_worker_opt_results(filename, nat, nstructs, xyz, energies, statu
   if (iostat /= 0 .or. magic /= 'CRES') then
     iostat = -1; close(u); return
   end if
-  read(u) nat  ! redundant but validates
-  read(u) nstructs
+  block
+    integer :: nat_check, ns_check
+    read(u) nat_check
+    read(u) ns_check
+  end block
   read(u) energies(1:nstructs)
   read(u) status(1:nstructs)
   read(u) xyz(1:3, 1:nat, 1:nstructs)
