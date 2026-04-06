@@ -655,13 +655,14 @@ subroutine crest_oloop(env,nat,nall,at,xyz,eread,dump,customcalc)
 !******************************************************************************
   use crest_parameters,only:wp,stdout,sep
   use crest_calculator
-  use iso_c_binding,only:c_null_ptr
+  use iso_c_binding,only:c_null_ptr,c_int,c_char,c_null_char
   use omp_lib
   use crest_data
   use strucrd
   use optimize_module
   use iomod,only:makedir,directory_exist,remove
   use crest_restartlog,only:trackrestart,restart_write_dummy
+  use worker_io_module,only:write_worker_opt_config,read_worker_opt_results
   implicit none
   type(systemdata),target,intent(inout) :: env
   real(wp),intent(inout) :: xyz(3,nat,nall)
@@ -686,6 +687,29 @@ subroutine crest_oloop(env,nat,nall,at,xyz,eread,dump,customcalc)
   integer :: T,Tn  !> threads and threads per core
   logical :: nested
 
+  !>--- process-based optimization variables
+  logical :: use_process_parallel
+  integer :: n_workers, chunk_size, idx_start, idx_end, n_chunk, n_failed
+  integer,allocatable :: pids(:), exit_codes(:), opt_stat_chunk(:)
+  real(wp),allocatable :: e_chunk(:), xyz_chunk(:,:,:)
+  character(len=512) :: progname, config_file, cmd_str, outfile
+  type(calcdata) :: worker_calc
+  integer :: exitstat
+
+  !>--- C interface for process bridge
+  interface
+    function c_spawn_process(cmd) bind(C, name='spawn_process')
+      import :: c_int, c_char
+      character(kind=c_char), intent(in) :: cmd(*)
+      integer(c_int) :: c_spawn_process
+    end function
+    function c_wait_for_process(pid) bind(C, name='wait_for_process')
+      import :: c_int
+      integer(c_int), value, intent(in) :: pid
+      integer(c_int) :: c_wait_for_process
+    end function
+  end interface
+
 !>--- decide wether to skip this call
   if (trackrestart(env)) then
     call restart_write_dummy(ensemblefile)
@@ -708,6 +732,167 @@ subroutine crest_oloop(env,nat,nall,at,xyz,eread,dump,customcalc)
 !>--- prepare calculation objects for parallelization (one per thread)
   call new_ompautoset(env,'auto_nested',nall,T,Tn)
   nested = env%omp_allow_nested
+
+!==========================================================================!
+!> PROCESS-BASED OPTIMIZATION (pymlip/libtorch GPU — bypasses GIL/mutex)
+!==========================================================================!
+  use_process_parallel = .false.
+  do j = 1,mycalc%ncalculations
+    if (mycalc%calcs(j)%id == jobtype%pymlip) then
+      use_process_parallel = .true.
+    end if
+    if (mycalc%calcs(j)%id == jobtype%libtorch .and. &
+        mycalc%calcs(j)%libtorch_device_id > 0) then
+      use_process_parallel = .true.
+    end if
+  end do
+
+  if (use_process_parallel .and. T > 1 .and. nall > 1) then
+
+    write(stdout,'(/,1x,a)') 'Using process-based parallelism for MLIP optimization'
+    call get_command_argument(0, progname)
+
+    n_workers = min(T, nall)
+    chunk_size = (nall + n_workers - 1) / n_workers  ! ceiling division
+    n_workers = (nall + chunk_size - 1) / chunk_size  ! actual workers needed
+    allocate(pids(n_workers), source=0)
+    allocate(exit_codes(n_workers), source=0)
+
+    write(stdout,'(1x,a,i0,a,i0,a,i0,a)') &
+      'Splitting ', nall, ' structures into ', n_workers, &
+      ' chunks (~', chunk_size, ' each)'
+
+    !>--- print optimization settings
+    call print_opt_data(mycalc,stdout)
+
+    call profiler%init(1)
+    call profiler%start(1)
+
+    !>--- Write configs and spawn all workers
+    n_failed = 0
+    do i = 1, n_workers
+      idx_start = (i-1)*chunk_size + 1
+      idx_end = min(i*chunk_size, nall)
+      n_chunk = idx_end - idx_start + 1
+
+      !>--- Prepare per-worker calculator with unique calcspace
+      worker_calc = mycalc
+      do j = 1, worker_calc%ncalculations
+        if (allocated(worker_calc%calcs(j)%calcspace)) then
+          ex = directory_exist(worker_calc%calcs(j)%calcspace)
+          if (.not.ex) exitstat = makedir(trim(worker_calc%calcs(j)%calcspace))
+          write(atmp,'(a,"_wopt",i0)') sep, i
+          worker_calc%calcs(j)%calcspace = &
+            mycalc%calcs(j)%calcspace // trim(atmp)
+        end if
+        worker_calc%calcs(j)%pymlip_handle = c_null_ptr
+        worker_calc%calcs(j)%libtorch_handle = c_null_ptr
+        worker_calc%calcs(j)%socket_handle = c_null_ptr
+      end do
+
+      !>--- Write binary config
+      write(config_file,'(a,a,i0,a)') 'OPTFILES', sep, i, '.bin'
+      ex = directory_exist('OPTFILES')
+      if (.not.ex) exitstat = makedir('OPTFILES')
+      call write_worker_opt_config(trim(config_file), nat, n_chunk, at, &
+                                    xyz(:,:,idx_start:idx_end), worker_calc, i)
+
+      !>--- Spawn worker
+      write(cmd_str,'(a,a,a,a,i0)') &
+        trim(progname), ' --worker-opt ', trim(config_file), ' ', i
+      pids(i) = int(c_spawn_process(trim(cmd_str) // c_null_char))
+      if (pids(i) <= 0) then
+        write(stdout,'(a,i0)') '**WARNING** Failed to spawn opt worker ', i
+        n_failed = n_failed + 1
+      end if
+    end do
+
+    !>--- Wait for all workers and collect results
+    eread(:) = 0.0_wp
+    c = 0
+    do i = 1, n_workers
+      if (pids(i) <= 0) cycle
+      exit_codes(i) = int(c_wait_for_process(int(pids(i), c_int)))
+
+      idx_start = (i-1)*chunk_size + 1
+      idx_end = min(i*chunk_size, nall)
+      n_chunk = idx_end - idx_start + 1
+
+      if (exit_codes(i) /= 0) then
+        write(stdout,'(a,i0,a,i0)') &
+          '**WARNING** Opt worker ', i, ' exited with status ', exit_codes(i)
+        n_failed = n_failed + 1
+        eread(idx_start:idx_end) = 1.0_wp
+        cycle
+      end if
+
+      !>--- Read results from worker output
+      write(outfile,'(a,a,i0,a)') 'OPTFILES', sep, i, '.bin.out'
+      allocate(e_chunk(n_chunk), opt_stat_chunk(n_chunk))
+      allocate(xyz_chunk(3, nat, n_chunk))
+      call read_worker_opt_results(trim(outfile), nat, n_chunk, &
+                                    xyz_chunk, e_chunk, opt_stat_chunk, io)
+      if (io == 0) then
+        do j = 1, n_chunk
+          k = idx_start + j - 1
+          eread(k) = e_chunk(j)
+          xyz(:,:,k) = xyz_chunk(:,:,j)
+          if (opt_stat_chunk(j) == 0) c = c + 1
+        end do
+      else
+        write(stdout,'(a,i0)') '**WARNING** Failed to read results from opt worker ', i
+        eread(idx_start:idx_end) = 1.0_wp
+        n_failed = n_failed + 1
+      end if
+      deallocate(e_chunk, opt_stat_chunk, xyz_chunk)
+    end do
+
+    call profiler%stop(1)
+
+    !>--- Summary
+    if (n_failed > 0) then
+      write(stdout,'(/,a,i0,a)') '**WARNING** ', n_failed, ' opt worker(s) had issues'
+    end if
+    percent = float(c)/float(nall)*100.0_wp
+    write (atmp,'(f5.1,a)') percent,'% success)'
+    write (stdout,'(">",1x,i0,a,i0,a,a)') c,' of ',nall, &
+      ' structures successfully optimized (', trim(adjustl(atmp))
+    write (atmp,'(">",1x,a,i0,a)') 'Total runtime for ',nall,' optimizations:'
+    call profiler%write_timing(stdout,1,trim(atmp),.true.)
+    runtime = profiler%get(1)
+    write (atmp,'(f16.3,a)') runtime/real(nall,wp),' sec'
+    write (stdout,'(a,a,a)') '> Corresponding to approximately ', &
+      trim(adjustl(atmp)), ' per processed structure'
+    call profiler%clear()
+
+    !>--- Dump ensemble file if requested
+    if (dump) then
+      open(newunit=ich, file=ensemblefile)
+      open(newunit=ich2, file=ensembleelog)
+      do i = 1, nall
+        if (eread(i) < 0.5_wp) then  ! valid energy (failed = 1.0)
+          block
+            type(coord) :: tmpmol
+            allocate(tmpmol%at(nat), tmpmol%xyz(3,nat))
+            tmpmol%nat = nat; tmpmol%at = at; tmpmol%xyz = xyz(:,:,i)
+            write(atmp,'(1x,"Etot=",f16.10)') eread(i)
+            tmpmol%comment = trim(atmp)
+            call tmpmol%append(ich)
+            deallocate(tmpmol%at, tmpmol%xyz)
+          end block
+        end if
+      end do
+      close(ich)
+      close(ich2)
+    end if
+
+    deallocate(pids, exit_codes)
+    return
+  end if
+
+!==========================================================================!
+!> OPENMP THREAD-PARALLEL PATH (non-MLIP or single thread fallback)
+!==========================================================================!
 
 !>--- prepare objects for parallelization
   allocate (calculations(T),source=mycalc)
@@ -1064,12 +1249,17 @@ subroutine crest_search_multimd(env,mol,mddats,nsim)
     return
   end if
 
-!>--- detect if pymlip is used (needs process-based parallelism)
+!>--- detect if MLIP GPU is used (needs process-based parallelism)
+!>    pymlip: Python GIL serializes all calls
+!>    libtorch GPU: forward_mutex serializes all forward passes
   use_process_parallel = .false.
   do j = 1,env%calc%ncalculations
     if (env%calc%calcs(j)%id == jobtype%pymlip) then
       use_process_parallel = .true.
-      exit
+    end if
+    if (env%calc%calcs(j)%id == jobtype%libtorch .and. &
+        env%calc%calcs(j)%libtorch_device_id > 0) then
+      use_process_parallel = .true.
     end if
   end do
 
@@ -1082,7 +1272,7 @@ subroutine crest_search_multimd(env,mol,mddats,nsim)
 !==========================================================================!
   if (use_process_parallel .and. T > 1) then
 
-    write(stdout,'(/,1x,a)') 'Using process-based parallelism for pymlip (bypassing GIL)'
+    write(stdout,'(/,1x,a)') 'Using process-based parallelism for MLIP (bypassing GIL/mutex)'
     write(stdout,'(1x,a,i0,a,i0,a)') 'Spawning up to ', T, ' worker processes for ', nsim, ' MTDs'
 
     !>--- get path to this CREST binary for self-exec

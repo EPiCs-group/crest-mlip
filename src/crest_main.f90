@@ -25,7 +25,7 @@ program CREST
   use crest_parameters !> Datatypes and constants
   use crest_data !> module for the main data storage (imports systemdata and timer)
   use crest_restartlog
-  use worker_md_module, only: crest_worker_run 
+  use worker_md_module, only: crest_worker_run, crest_worker_opt_run
     USE, INTRINSIC :: IEEE_EXCEPTIONS
   implicit none
   type(systemdata) :: env  !> MAIN STORAGE OF SYSTEM DATA
@@ -67,6 +67,13 @@ program CREST
       if (args >= i+2) read(arg(i+2), *, iostat=io) env%worker_index
       deallocate(arg)
       call crest_worker_run(env)
+      stop
+    end if
+    if (trim(arg(i)) == '--worker-opt' .or. trim(arg(i)) == '-worker-opt') then
+      if (args >= i+1) env%worker_config = trim(arg(i+1))
+      if (args >= i+2) read(arg(i+2), *, iostat=io) env%worker_index
+      deallocate(arg)
+      call crest_worker_opt_run(env)
       stop
     end if
   end do

@@ -16,6 +16,8 @@ module worker_io_module
   private
 
   public :: write_worker_config, read_worker_config
+  public :: write_worker_opt_config, read_worker_opt_config
+  public :: write_worker_opt_results, read_worker_opt_results
 
 contains
 
@@ -371,6 +373,219 @@ subroutine read_calc_level(u, cs)
   cs%libtorch_total_time = 0.0d0
 
 end subroutine read_calc_level
+
+!========================================================================================!
+!========================================================================================!
+!> Optimization worker config serialization
+!========================================================================================!
+!========================================================================================!
+
+subroutine write_worker_opt_config(filename, nat, nstructs, at, xyz, calc, worker_index)
+!*********************************************************************
+!* Write a chunk of structures + calculator/optimization settings
+!* for an optimization worker process.
+!*********************************************************************
+  implicit none
+  character(len=*), intent(in) :: filename
+  integer, intent(in) :: nat, nstructs, worker_index
+  integer, intent(in) :: at(nat)
+  real(wp), intent(in) :: xyz(3, nat, nstructs)
+  type(calcdata), intent(in) :: calc
+  integer :: u, j
+
+  open(newunit=u, file=filename, form='unformatted', status='replace', &
+       access='stream', action='write')
+
+  write(u) 'COPT'   ! magic for optimization config
+  write(u) 1        ! format version
+  write(u) worker_index
+  write(u) nat
+  write(u) nstructs
+
+  !>--- Atom types (shared across all structures)
+  write(u) at(1:nat)
+
+  !>--- All structures (contiguous)
+  write(u) xyz(1:3, 1:nat, 1:nstructs)
+
+  !>--- Calculator settings
+  write(u) calc%ncalculations
+  write(u) calc%id
+  if (calc%nfreeze > 0 .and. allocated(calc%freezelist)) then
+    write(u) calc%nfreeze
+    write(u) calc%freezelist
+  else
+    write(u) 0
+  end if
+  write(u) calc%nconstraints
+
+  !>--- Optimization settings
+  write(u) calc%optlev
+  write(u) calc%maxcycle
+  write(u) calc%opt_engine
+  write(u) calc%ethr_opt
+  write(u) calc%gthr_opt
+  write(u) calc%hlow_opt
+  write(u) calc%hmax_opt
+  write(u) calc%acc_opt
+  write(u) calc%maxdispl_opt
+  write(u) calc%maxerise
+  write(u) calc%hguess
+  write(u) calc%exact_rf
+  write(u) calc%average_conv
+  write(u) calc%iupdat
+  write(u) calc%anopt
+  write(u) calc%micro_opt
+
+  !>--- Per-level calculation settings
+  do j = 1, calc%ncalculations
+    call write_calc_level(u, calc%calcs(j))
+  end do
+
+  close(u)
+end subroutine write_worker_opt_config
+
+!========================================================================================!
+subroutine read_worker_opt_config(filename, nat, nstructs, at, xyz, calc, &
+                                   worker_index, iostat)
+!*********************************************************************
+!* Read optimization worker config from binary file.
+!*********************************************************************
+  use iso_c_binding, only: c_null_ptr
+  implicit none
+  character(len=*), intent(in) :: filename
+  integer, intent(out) :: nat, nstructs, worker_index, iostat
+  integer, allocatable, intent(out) :: at(:)
+  real(wp), allocatable, intent(out) :: xyz(:,:,:)
+  type(calcdata), intent(out) :: calc
+  integer :: u, j, version
+  character(len=4) :: magic
+
+  iostat = 0
+  open(newunit=u, file=filename, form='unformatted', status='old', &
+       access='stream', action='read', iostat=iostat)
+  if (iostat /= 0) then
+    write(stdout, '(a,a)') '**ERROR** Cannot open opt config: ', trim(filename)
+    return
+  end if
+
+  read(u, iostat=iostat) magic
+  if (iostat /= 0 .or. magic /= 'COPT') then
+    write(stdout, '(a)') '**ERROR** Invalid opt config (bad magic)'
+    iostat = -1; close(u); return
+  end if
+  read(u) version
+  if (version /= 1) then
+    write(stdout, '(a,i0)') '**ERROR** Unsupported opt config version: ', version
+    iostat = -2; close(u); return
+  end if
+
+  read(u) worker_index
+  read(u) nat
+  read(u) nstructs
+
+  allocate(at(nat))
+  allocate(xyz(3, nat, nstructs))
+  read(u) at(1:nat)
+  read(u) xyz(1:3, 1:nat, 1:nstructs)
+
+  !>--- Calculator settings
+  read(u) calc%ncalculations
+  read(u) calc%id
+  read(u) calc%nfreeze
+  if (calc%nfreeze > 0) then
+    allocate(calc%freezelist(nat))
+    read(u) calc%freezelist
+  end if
+  read(u) calc%nconstraints
+
+  !>--- Optimization settings
+  read(u) calc%optlev
+  read(u) calc%maxcycle
+  read(u) calc%opt_engine
+  read(u) calc%ethr_opt
+  read(u) calc%gthr_opt
+  read(u) calc%hlow_opt
+  read(u) calc%hmax_opt
+  read(u) calc%acc_opt
+  read(u) calc%maxdispl_opt
+  read(u) calc%maxerise
+  read(u) calc%hguess
+  read(u) calc%exact_rf
+  read(u) calc%average_conv
+  read(u) calc%iupdat
+  read(u) calc%anopt
+  read(u) calc%micro_opt
+
+  !>--- Per-level calculation settings
+  allocate(calc%calcs(calc%ncalculations))
+  do j = 1, calc%ncalculations
+    call read_calc_level(u, calc%calcs(j))
+  end do
+
+  !>--- Allocate working arrays
+  allocate(calc%etmp(calc%ncalculations), source=0.0_wp)
+  allocate(calc%grdtmp(3, nat, calc%ncalculations), source=0.0_wp)
+  allocate(calc%eweight(calc%ncalculations), source=1.0_wp)
+
+  close(u)
+end subroutine read_worker_opt_config
+
+!========================================================================================!
+subroutine write_worker_opt_results(filename, nat, nstructs, xyz, energies, status)
+!*********************************************************************
+!* Write optimization results: optimized coords + energies + status
+!*********************************************************************
+  implicit none
+  character(len=*), intent(in) :: filename
+  integer, intent(in) :: nat, nstructs
+  real(wp), intent(in) :: xyz(3, nat, nstructs)
+  real(wp), intent(in) :: energies(nstructs)
+  integer, intent(in) :: status(nstructs)
+  integer :: u
+
+  open(newunit=u, file=filename, form='unformatted', status='replace', &
+       access='stream', action='write')
+  write(u) 'CRES'
+  write(u) nat
+  write(u) nstructs
+  write(u) energies(1:nstructs)
+  write(u) status(1:nstructs)
+  write(u) xyz(1:3, 1:nat, 1:nstructs)
+  close(u)
+end subroutine write_worker_opt_results
+
+!========================================================================================!
+subroutine read_worker_opt_results(filename, nat, nstructs, xyz, energies, status, iostat)
+!*********************************************************************
+!* Read optimization results from worker output file.
+!*********************************************************************
+  implicit none
+  character(len=*), intent(in) :: filename
+  integer, intent(in) :: nat, nstructs
+  real(wp), intent(out) :: xyz(3, nat, nstructs)
+  real(wp), intent(out) :: energies(nstructs)
+  integer, intent(out) :: status(nstructs)
+  integer, intent(out) :: iostat
+  integer :: u
+  character(len=4) :: magic
+
+  iostat = 0
+  open(newunit=u, file=filename, form='unformatted', status='old', &
+       access='stream', action='read', iostat=iostat)
+  if (iostat /= 0) return
+
+  read(u, iostat=iostat) magic
+  if (iostat /= 0 .or. magic /= 'CRES') then
+    iostat = -1; close(u); return
+  end if
+  read(u) nat  ! redundant but validates
+  read(u) nstructs
+  read(u) energies(1:nstructs)
+  read(u) status(1:nstructs)
+  read(u) xyz(1:3, 1:nat, 1:nstructs)
+  close(u)
+end subroutine read_worker_opt_results
 
 !========================================================================================!
 !> Helper: write allocatable string (length-prefixed)
