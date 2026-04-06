@@ -39,6 +39,11 @@
 
 #include <torch/script.h>
 #include <torch/torch.h>
+#if __has_include(<c10/cuda/CUDAGuard.h>)
+#include <c10/cuda/CUDAGuard.h>
+#include <cuda_runtime.h>
+#define CREST_HAS_CUDA_HEADERS 1
+#endif
 
 #include <cstring>
 #include <cmath>
@@ -1339,10 +1344,10 @@ int libtorch_get_gpu_memory(long long* total_bytes, long long* free_bytes)
 {
     *total_bytes = 0;
     *free_bytes = 0;
+#ifdef CREST_HAS_CUDA_HEADERS
     if (!torch::cuda::is_available()) return 1;
     try {
         size_t free_mem = 0, total_mem = 0;
-        /* Use PyTorch's CUDA memory info (wraps cudaMemGetInfo) */
         auto device = torch::Device(torch::kCUDA, 0);
         c10::cuda::CUDAGuard guard(device);
         cudaMemGetInfo(&free_mem, &total_mem);
@@ -1352,6 +1357,9 @@ int libtorch_get_gpu_memory(long long* total_bytes, long long* free_bytes)
     } catch (...) {
         return 1;
     }
+#else
+    return 1;  /* No CUDA headers at compile time */
+#endif
 }
 
 } /* extern "C" */
