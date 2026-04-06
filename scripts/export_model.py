@@ -225,8 +225,9 @@ class MACEWrapper(torch.nn.Module):
 
         compute_dtype = torch.float32 if self.use_float32 else torch.float64
 
-        # Convert to model units
+        # Convert to model units (requires_grad for MACE autograd forces)
         positions_ang = (positions_bohr * self._bohr_to_ang).to(compute_dtype)
+        positions_ang.requires_grad_(True)
         z = atomic_numbers.to(torch.long)
 
         # Build neighbor list
@@ -274,11 +275,10 @@ class MACEWrapper(torch.nn.Module):
             "head": head,
         }
 
-        with torch.no_grad():
-            output = self.model(data, training=False)
+        output = self.model(data, training=False)
 
-        energy_ev = output["energy"].to(torch.float64)
-        forces_ev_ang = output["forces"].to(torch.float64)
+        energy_ev = output["energy"].detach().to(torch.float64)
+        forces_ev_ang = output["forces"].detach().to(torch.float64)
 
         energy_hartree = energy_ev * self._ev_to_hartree
         gradient_hartree_bohr = forces_ev_ang * self._force_to_grad
