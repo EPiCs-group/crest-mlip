@@ -172,7 +172,7 @@ class MACETorchScriptWrapper(torch.nn.Module):
 
 def load_mace_model(model_path, device='cpu'):
     """Load a MACE model and extract z_table and cutoff."""
-    model = torch.load(model_path, map_location=device)
+    model = torch.load(model_path, map_location=device, weights_only=False)
 
     # Extract cutoff
     cutoff = None
