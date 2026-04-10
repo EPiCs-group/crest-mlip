@@ -313,16 +313,16 @@ contains !> MODULE PROCEDURES START HERE
         job%pymlip_device = 'cuda'
       case ('cuda:0')
         job%libtorch_device_id = 10
-        job%pymlip_device = 'cuda'
+        job%pymlip_device = 'cuda:0'
       case ('cuda:1')
         job%libtorch_device_id = 11
-        job%pymlip_device = 'cuda'
+        job%pymlip_device = 'cuda:1'
       case ('cuda:2')
         job%libtorch_device_id = 12
-        job%pymlip_device = 'cuda'
+        job%pymlip_device = 'cuda:2'
       case ('cuda:3')
         job%libtorch_device_id = 13
-        job%pymlip_device = 'cuda'
+        job%pymlip_device = 'cuda:3'
       case ('mps')
         job%libtorch_device_id = 2
         job%pymlip_device = 'mps'

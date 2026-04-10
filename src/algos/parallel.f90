@@ -255,16 +255,7 @@ subroutine crest_sploop(env,nat,nall,at,xyz,eread)
         use_batch_gpu = .true.
         batch_sz = env%calc%calcs(j)%mlip_batch_size
         ngpus = env%calc%calcs(j)%mlip_ngpus
-        if (batch_sz <= 0) then
-          !> Auto batch size based on atom count
-          if (nat < 30) then
-            batch_sz = 64
-          else if (nat < 100) then
-            batch_sz = 16
-          else
-            batch_sz = 4
-          end if
-        end if
+        if (batch_sz <= 0) batch_sz = mlip_auto_batch_size(nat)
         exit
       end if
     end do
@@ -290,11 +281,7 @@ subroutine crest_sploop(env,nat,nall,at,xyz,eread)
       !> Pack ALL positions into contiguous buffer for C++
       allocate(all_pos(3*nat*nall))
       allocate(all_grad(3*nat*nall))
-      !$omp parallel do private(i) schedule(static)
-      do i = 1, nall
-        all_pos((i-1)*nat*3+1 : i*nat*3) = reshape(xyz(:,:,i), [nat*3])
-      end do
-      !$omp end parallel do
+      all_pos(1:3*nat*nall) = reshape(xyz(:,:,1:nall), [3*nat*nall])
 
       !> First progress printout
       call crest_oloop_pr_progress(env,nall,0)
@@ -398,15 +385,7 @@ subroutine crest_sploop(env,nat,nall,at,xyz,eread)
         if (env%calc%calcs(j)%pymlip_device /= 'cpu') then
           use_pymlip_batch = .true.
           batch_sz = env%calc%calcs(j)%mlip_batch_size
-          if (batch_sz <= 0) then
-            if (nat < 30) then
-              batch_sz = 64
-            else if (nat < 100) then
-              batch_sz = 16
-            else
-              batch_sz = 4
-            end if
-          end if
+          if (batch_sz <= 0) batch_sz = mlip_auto_batch_size(nat)
           exit
         end if
       end if
@@ -471,10 +450,8 @@ subroutine crest_sploop(env,nat,nall,at,xyz,eread)
         trim(adjustl(atmp)), ' per processed structure'
       write (stdout,'(">",1x,a,i0)') 'Total number of energy+grad calls: ',c
       call profiler%clear()
-      !>--- Cleanup shared pymlip model
-      call pymlip_cleanup(env%calc%calcs(1))
-      !>--- Cleanup shared ase_socket model
-      call ase_socket_cleanup(env%calc%calcs(1))
+      !>--- Cleanup shared MLIP model
+      call mlip_cleanup_all(env%calc)
       deallocate (calculations)
       if (allocated(mols)) deallocate (mols)
       return
@@ -496,9 +473,19 @@ subroutine crest_sploop(env,nat,nall,at,xyz,eread)
         'For CPU-only work, consider method=''gfn2''.'
       exit
     end if
+    !>--- Warn if libtorch GPU fell through to the serialized OpenMP path
+    if (env%calc%calcs(j)%id == jobtype%libtorch .and. &
+        env%calc%calcs(j)%libtorch_device_id > 0 .and. T > 1) then
+      write(stdout,'(a)') ' [libtorch] WARNING: GPU MLIP fell through to '// &
+        'per-thread OpenMP path. All forward passes are serialized by '// &
+        'forward_mutex — this is SLOWER than single-threaded.'
+      write(stdout,'(a)') '   Prefer the batched GPU path (ensure '// &
+        'ncalculations=1) or set threads=1.'
+      exit
+    end if
   end do
 
-!>--- Warn if running pymlip on CPU
+!>--- Warn if running pymlip on CPU or serialized GPU path
   do j = 1,env%calc%ncalculations
     if (env%calc%calcs(j)%id == jobtype%pymlip) then
       if (.not.allocated(env%calc%calcs(j)%pymlip_device) .or. &
@@ -507,8 +494,10 @@ subroutine crest_sploop(env,nat,nall,at,xyz,eread)
           'For faster inference, set device=''cuda'' in the input.'
       else
         if (T > 1) then
-          write(stdout,'(a,i0,a)') ' [pymlip] NOTE: GPU mode with ', T, &
-            ' threads. Model is shared; GPU handles parallelism internally.'
+          write(stdout,'(a,i0,a)') ' [pymlip] WARNING: GPU mode with ', T, &
+            ' threads, but Python GIL serializes all forward passes — '// &
+            'this is SLOWER than single-threaded. '// &
+            'Prefer the batched path (ncalculations=1) or set threads=1.'
         end if
       end if
       exit
@@ -597,39 +586,27 @@ subroutine crest_sploop(env,nat,nall,at,xyz,eread)
   !>    We nullify the handle before calling cleanup so that cleanup only
   !>    prints accumulated stats (call count, total time) without freeing
   !>    the shared model — the actual model is freed by libtorch_shared_cleanup()
-  !>    or pymlip_cleanup() on the master's env%calc.
+  !>    or mlip_cleanup_all() on the master's env%calc.
   do i = 1,T
     do j = 1,env%calc%ncalculations
-      if (calculations(i)%calcs(j)%id == jobtype%libtorch) then
+      if (calculations(i)%calcs(j)%id == jobtype%libtorch) &
         calculations(i)%calcs(j)%libtorch_handle = c_null_ptr
-        call libtorch_cleanup(calculations(i)%calcs(j))
-      end if
-      if (calculations(i)%calcs(j)%id == jobtype%pymlip) then
+      if (calculations(i)%calcs(j)%id == jobtype%pymlip) &
         calculations(i)%calcs(j)%pymlip_handle = c_null_ptr
-        call pymlip_cleanup(calculations(i)%calcs(j))
-      end if
-      if (calculations(i)%calcs(j)%id == jobtype%ase_socket) then
+      if (calculations(i)%calcs(j)%id == jobtype%ase_socket) &
         calculations(i)%calcs(j)%socket_handle = c_null_ptr
-        call ase_socket_cleanup(calculations(i)%calcs(j))
-      end if
     end do
+    call mlip_cleanup_all(calculations(i))
   end do
-  !>--- Free shared libtorch model once
-  call libtorch_shared_cleanup()
-  do j = 1,env%calc%ncalculations
-    if (env%calc%calcs(j)%id == jobtype%libtorch) then
-      env%calc%calcs(j)%libtorch_handle = c_null_ptr
-    end if
-  end do
-  !>--- Free shared pymlip model once
-  do j = 1,env%calc%ncalculations
-    if (env%calc%calcs(j)%id == jobtype%pymlip) then
-      call pymlip_cleanup(env%calc%calcs(j))
-    end if
-    if (env%calc%calcs(j)%id == jobtype%ase_socket) then
-      call ase_socket_cleanup(env%calc%calcs(j))
-    end if
-  end do
+  !>--- Free shared models (skipped if mlip_keep_loaded for persistence)
+  if (.not. env%calc%mlip_keep_loaded) then
+    call libtorch_shared_cleanup()
+    do j = 1,env%calc%ncalculations
+      if (env%calc%calcs(j)%id == jobtype%libtorch) &
+        env%calc%calcs(j)%libtorch_handle = c_null_ptr
+    end do
+  end if
+  call mlip_cleanup_all(env%calc)
   deallocate (calculations)
   if (allocated(mols)) deallocate (mols)
   return
@@ -736,16 +713,7 @@ subroutine crest_oloop(env,nat,nall,at,xyz,eread,dump,customcalc)
 !==========================================================================!
 !> PROCESS-BASED OPTIMIZATION (pymlip/libtorch GPU — bypasses GIL/mutex)
 !==========================================================================!
-  use_process_parallel = .false.
-  do j = 1,mycalc%ncalculations
-    if (mycalc%calcs(j)%id == jobtype%pymlip) then
-      use_process_parallel = .true.
-    end if
-    if (mycalc%calcs(j)%id == jobtype%libtorch .and. &
-        mycalc%calcs(j)%libtorch_device_id > 0) then
-      use_process_parallel = .true.
-    end if
-  end do
+  use_process_parallel = mlip_needs_process_parallel(mycalc)
 
   if (use_process_parallel .and. T > 1 .and. nall > 1) then
 
@@ -959,6 +927,29 @@ subroutine crest_oloop(env,nat,nall,at,xyz,eread,dump,customcalc)
     end if
   end do
 
+!>--- Warn if MLIP GPU is using serialized OpenMP path
+  if (T > 1) then
+    do j = 1,mycalc%ncalculations
+      if (mycalc%calcs(j)%id == jobtype%libtorch .and. &
+          mycalc%calcs(j)%libtorch_device_id > 0) then
+        write(stdout,'(a)') ' [libtorch] WARNING: GPU optimization using '// &
+          'per-thread OpenMP path (forward_mutex serializes all passes). '// &
+          'This is SLOWER than single-threaded. Set threads=1 to avoid overhead.'
+        exit
+      end if
+      if (mycalc%calcs(j)%id == jobtype%pymlip) then
+        if (allocated(mycalc%calcs(j)%pymlip_device)) then
+          if (mycalc%calcs(j)%pymlip_device /= 'cpu') then
+            write(stdout,'(a)') ' [pymlip] WARNING: GPU optimization using '// &
+              'per-thread OpenMP path (GIL serializes all passes). '// &
+              'This is SLOWER than single-threaded. Set threads=1 to avoid overhead.'
+            exit
+          end if
+        end if
+      end if
+    end do
+  end if
+
 !>--- printout directions and timer initialization
   pr = .false. !> stdout printout
   wr = .false. !> write crestopt.log
@@ -1069,40 +1060,27 @@ subroutine crest_oloop(env,nat,nall,at,xyz,eread,dump,customcalc)
 
   deallocate (grads)
   call profiler%clear()
-  !>--- libtorch/pymlip: close per-thread connections before cleanup
+  !>--- Nullify per-thread shared handles, then cleanup stats
   do i = 1,T
     do j = 1,mycalc%ncalculations
-      if (calculations(i)%calcs(j)%id == jobtype%libtorch) then
+      if (calculations(i)%calcs(j)%id == jobtype%libtorch) &
         calculations(i)%calcs(j)%libtorch_handle = c_null_ptr
-        call libtorch_cleanup(calculations(i)%calcs(j))
-      end if
-      if (calculations(i)%calcs(j)%id == jobtype%pymlip) then
-        !> Nullify shared handle so cleanup only prints stats, doesn't free
+      if (calculations(i)%calcs(j)%id == jobtype%pymlip) &
         calculations(i)%calcs(j)%pymlip_handle = c_null_ptr
-        call pymlip_cleanup(calculations(i)%calcs(j))
-      end if
-      if (calculations(i)%calcs(j)%id == jobtype%ase_socket) then
+      if (calculations(i)%calcs(j)%id == jobtype%ase_socket) &
         calculations(i)%calcs(j)%socket_handle = c_null_ptr
-        call ase_socket_cleanup(calculations(i)%calcs(j))
-      end if
     end do
+    call mlip_cleanup_all(calculations(i))
   end do
-  !>--- Free shared libtorch model once
-  call libtorch_shared_cleanup()
-  do j = 1,env%calc%ncalculations
-    if (env%calc%calcs(j)%id == jobtype%libtorch) then
-      env%calc%calcs(j)%libtorch_handle = c_null_ptr
-    end if
-  end do
-  !>--- Free shared pymlip model once
-  do j = 1,mycalc%ncalculations
-    if (mycalc%calcs(j)%id == jobtype%pymlip) then
-      call pymlip_cleanup(mycalc%calcs(j))
-    end if
-    if (mycalc%calcs(j)%id == jobtype%ase_socket) then
-      call ase_socket_cleanup(mycalc%calcs(j))
-    end if
-  end do
+  !>--- Free shared models (skipped if mlip_keep_loaded for persistence)
+  if (.not. mycalc%mlip_keep_loaded) then
+    call libtorch_shared_cleanup()
+    do j = 1,mycalc%ncalculations
+      if (mycalc%calcs(j)%id == jobtype%libtorch) &
+        mycalc%calcs(j)%libtorch_handle = c_null_ptr
+    end do
+  end if
+  call mlip_cleanup_all(mycalc)
   deallocate (calculations)
   if (allocated(mols)) deallocate (mols)
   if (allocated(molsnew)) deallocate (molsnew)
@@ -1250,18 +1228,7 @@ subroutine crest_search_multimd(env,mol,mddats,nsim)
   end if
 
 !>--- detect if MLIP GPU is used (needs process-based parallelism)
-!>    pymlip: Python GIL serializes all calls
-!>    libtorch GPU: forward_mutex serializes all forward passes
-  use_process_parallel = .false.
-  do j = 1,env%calc%ncalculations
-    if (env%calc%calcs(j)%id == jobtype%pymlip) then
-      use_process_parallel = .true.
-    end if
-    if (env%calc%calcs(j)%id == jobtype%libtorch .and. &
-        env%calc%calcs(j)%libtorch_device_id > 0) then
-      use_process_parallel = .true.
-    end if
-  end do
+  use_process_parallel = mlip_needs_process_parallel(env%calc)
 
 !>--- determine thread/worker count
   call new_ompautoset(env,'auto_nested',nsim,T,Tn)
@@ -1432,6 +1399,29 @@ subroutine crest_search_multimd(env,mol,mddats,nsim)
     end if
   end do
 
+!>--- Warn if MLIP GPU ended up in serialized OpenMP path
+  if (T > 1) then
+    do j = 1,env%calc%ncalculations
+      if (env%calc%calcs(j)%id == jobtype%libtorch .and. &
+          env%calc%calcs(j)%libtorch_device_id > 0) then
+        write(stdout,'(a)') ' [libtorch] WARNING: GPU MD using per-thread '// &
+          'OpenMP path (forward_mutex serializes all passes). '// &
+          'This is SLOWER than single-threaded. Set threads=1 to avoid overhead.'
+        exit
+      end if
+      if (env%calc%calcs(j)%id == jobtype%pymlip) then
+        if (allocated(env%calc%calcs(j)%pymlip_device)) then
+          if (env%calc%calcs(j)%pymlip_device /= 'cpu') then
+            write(stdout,'(a)') ' [pymlip] WARNING: GPU MD using per-thread '// &
+              'OpenMP path (GIL serializes all passes). '// &
+              'This is SLOWER than single-threaded. Set threads=1 to avoid overhead.'
+            exit
+          end if
+        end if
+      end if
+    end do
+  end if
+
   !>--- initialize the calculations (one per thread, not per simulation)
   do i = 1,T
     call engrad(moltmps(i),calculations(i),etmp,grdtmp,io)
@@ -1484,36 +1474,27 @@ subroutine crest_search_multimd(env,mol,mddats,nsim)
   call collect(nsim,mddats)
 
   call profiler%clear()
-  !>--- libtorch/pymlip: close per-thread connections before cleanup
+  !>--- Nullify per-thread shared handles, then cleanup stats
   do i = 1,T
     do j = 1,env%calc%ncalculations
-      if (calculations(i)%calcs(j)%id == jobtype%libtorch) then
+      if (calculations(i)%calcs(j)%id == jobtype%libtorch) &
         calculations(i)%calcs(j)%libtorch_handle = c_null_ptr
-        call libtorch_cleanup(calculations(i)%calcs(j))
-      end if
-      if (calculations(i)%calcs(j)%id == jobtype%pymlip) then
+      if (calculations(i)%calcs(j)%id == jobtype%pymlip) &
         calculations(i)%calcs(j)%pymlip_handle = c_null_ptr
-        call pymlip_cleanup(calculations(i)%calcs(j))
-      end if
-      if (calculations(i)%calcs(j)%id == jobtype%ase_socket) then
+      if (calculations(i)%calcs(j)%id == jobtype%ase_socket) &
         calculations(i)%calcs(j)%socket_handle = c_null_ptr
-        call ase_socket_cleanup(calculations(i)%calcs(j))
-      end if
     end do
+    call mlip_cleanup_all(calculations(i))
   end do
-  call libtorch_shared_cleanup()
-  !>--- Reset env%calc handles so the next phase can re-initialize
-  do j = 1,env%calc%ncalculations
-    if (env%calc%calcs(j)%id == jobtype%libtorch) then
-      env%calc%calcs(j)%libtorch_handle = c_null_ptr
-    end if
-    if (env%calc%calcs(j)%id == jobtype%pymlip) then
-      call pymlip_cleanup(env%calc%calcs(j))
-    end if
-    if (env%calc%calcs(j)%id == jobtype%ase_socket) then
-      call ase_socket_cleanup(env%calc%calcs(j))
-    end if
-  end do
+  !>--- Free shared models (skipped if mlip_keep_loaded for persistence)
+  if (.not. env%calc%mlip_keep_loaded) then
+    call libtorch_shared_cleanup()
+    do j = 1,env%calc%ncalculations
+      if (env%calc%calcs(j)%id == jobtype%libtorch) &
+        env%calc%calcs(j)%libtorch_handle = c_null_ptr
+    end do
+  end if
+  call mlip_cleanup_all(env%calc)
   deallocate (calculations)
   if (allocated(moltmps)) deallocate (moltmps)
   return
@@ -1600,18 +1581,8 @@ subroutine crest_search_multimd_init(env,mol,mddat,nsim)
       call engrad(mol,calc,energy,grad,io)
       deallocate (grad)
       calc%calcs(1)%rdwbo = .false.
-      !>--- MLIP/libtorch: cleanup after WBO calculation
-      do i = 1, calc%ncalculations
-        if (calc%calcs(i)%id == jobtype%libtorch) then
-          call libtorch_cleanup(calc%calcs(i))
-        end if
-        if (calc%calcs(i)%id == jobtype%pymlip) then
-          call pymlip_cleanup(calc%calcs(i))
-        end if
-        if (calc%calcs(i)%id == jobtype%ase_socket) then
-          call ase_socket_cleanup(calc%calcs(i))
-        end if
-      end do
+      !>--- MLIP cleanup after WBO calculation
+      call mlip_cleanup_all(calc)
 
       shk%shake_mode = env%mddat%shk%shake_mode
       if (allocated(calc%calcs(1)%wbo)) then
@@ -1870,35 +1841,27 @@ subroutine crest_search_multimd2(env,mols,mddats,nsim)
   call collect(nsim,mddats)
 
   call profiler%clear()
-  !>--- libtorch/pymlip: close per-thread connections before cleanup
+  !>--- Nullify per-thread shared handles, then cleanup stats
   do i = 1,T
     do j = 1,env%calc%ncalculations
-      if (calculations(i)%calcs(j)%id == jobtype%libtorch) then
+      if (calculations(i)%calcs(j)%id == jobtype%libtorch) &
         calculations(i)%calcs(j)%libtorch_handle = c_null_ptr
-        call libtorch_cleanup(calculations(i)%calcs(j))
-      end if
-      if (calculations(i)%calcs(j)%id == jobtype%pymlip) then
+      if (calculations(i)%calcs(j)%id == jobtype%pymlip) &
         calculations(i)%calcs(j)%pymlip_handle = c_null_ptr
-        call pymlip_cleanup(calculations(i)%calcs(j))
-      end if
-      if (calculations(i)%calcs(j)%id == jobtype%ase_socket) then
+      if (calculations(i)%calcs(j)%id == jobtype%ase_socket) &
         calculations(i)%calcs(j)%socket_handle = c_null_ptr
-        call ase_socket_cleanup(calculations(i)%calcs(j))
-      end if
     end do
+    call mlip_cleanup_all(calculations(i))
   end do
-  call libtorch_shared_cleanup()
-  do j = 1,env%calc%ncalculations
-    if (env%calc%calcs(j)%id == jobtype%libtorch) then
-      env%calc%calcs(j)%libtorch_handle = c_null_ptr
-    end if
-    if (env%calc%calcs(j)%id == jobtype%pymlip) then
-      call pymlip_cleanup(env%calc%calcs(j))
-    end if
-    if (env%calc%calcs(j)%id == jobtype%ase_socket) then
-      call ase_socket_cleanup(env%calc%calcs(j))
-    end if
-  end do
+  !>--- Free shared models (skipped if mlip_keep_loaded for persistence)
+  if (.not. env%calc%mlip_keep_loaded) then
+    call libtorch_shared_cleanup()
+    do j = 1,env%calc%ncalculations
+      if (env%calc%calcs(j)%id == jobtype%libtorch) &
+        env%calc%calcs(j)%libtorch_handle = c_null_ptr
+    end do
+  end if
+  call mlip_cleanup_all(env%calc)
   deallocate (calculations)
   if (allocated(moltmps)) deallocate (moltmps)
   return

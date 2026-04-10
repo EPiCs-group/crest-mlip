@@ -90,29 +90,8 @@ subroutine crest_scan(env,tim)
 
   deallocate (grad)
 !>--- MLIP cleanup: release GPU memory, close sockets, free Python objects.
-!>    Idempotent — safe to call even if backend was never initialized.
-  do j = 1, calc%ncalculations
-    if (calc%calcs(j)%id == jobtype%libtorch) then
-      call libtorch_cleanup(calc%calcs(j))
-    end if
-    if (calc%calcs(j)%id == jobtype%pymlip) then
-      call pymlip_cleanup(calc%calcs(j))
-    end if
-    if (calc%calcs(j)%id == jobtype%ase_socket) then
-      call ase_socket_cleanup(calc%calcs(j))
-    end if
-  end do
-  do j = 1, calcclean%ncalculations
-    if (calcclean%calcs(j)%id == jobtype%libtorch) then
-      call libtorch_cleanup(calcclean%calcs(j))
-    end if
-    if (calcclean%calcs(j)%id == jobtype%pymlip) then
-      call pymlip_cleanup(calcclean%calcs(j))
-    end if
-    if (calcclean%calcs(j)%id == jobtype%ase_socket) then
-      call ase_socket_cleanup(calcclean%calcs(j))
-    end if
-  end do
+  call mlip_cleanup_all(calc)
+  call mlip_cleanup_all(calcclean)
 !========================================================================================!
   call tim%stop(14)
   return
@@ -213,8 +192,6 @@ contains
       end select
       deallocate (tmppoints)
     end do
-
-    write(*,*) 'constraints',calc%nconstraints
 
     !>--- set calculations to 1 for the geometry generation
     calc%ncalculations = 1

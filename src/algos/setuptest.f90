@@ -110,17 +110,7 @@ subroutine trialMD_calculator(env)
       allocate(grd(3,mol%nat))
       call engrad(mol,tmpcalc,energy,grd,io)
       !> Close MLIP sockets/processes opened by engrad
-      do j = 1, tmpcalc%ncalculations
-        if (tmpcalc%calcs(j)%id == jobtype%libtorch) then
-          call libtorch_cleanup(tmpcalc%calcs(j))
-        end if
-        if (tmpcalc%calcs(j)%id == jobtype%pymlip) then
-          call pymlip_cleanup(tmpcalc%calcs(j))
-        end if
-        if (tmpcalc%calcs(j)%id == jobtype%ase_socket) then
-          call ase_socket_cleanup(tmpcalc%calcs(j))
-        end if
-      end do
+      call mlip_cleanup_all(tmpcalc)
       if (allocated(tmpcalc%calcs(1)%wbo)) then
         call move_alloc(tmpcalc%calcs(1)%wbo, env%ref%wbo)
         MDSTART%shk%wbo = env%ref%wbo
@@ -173,17 +163,7 @@ subroutine trialMD_calculator(env)
     !================================!
     !>--- MLIP cleanup after each trial MD iteration (release GPU/sockets
     !>    so the next iteration can reinitialize cleanly)
-    do j = 1, env%calc%ncalculations
-      if (env%calc%calcs(j)%id == jobtype%libtorch) then
-        call libtorch_cleanup(env%calc%calcs(j))
-      end if
-      if (env%calc%calcs(j)%id == jobtype%pymlip) then
-        call pymlip_cleanup(env%calc%calcs(j))
-      end if
-      if (env%calc%calcs(j)%id == jobtype%ase_socket) then
-        call ase_socket_cleanup(env%calc%calcs(j))
-      end if
-    end do
+    call mlip_cleanup_all(env%calc)
 
     if (io == 0) then
       write (atmp,'(1x,"Trial MTD ",i0," runtime (",f3.1," ps)")') counter,MD%length_ps
@@ -235,17 +215,7 @@ subroutine trialMD_calculator(env)
 !>--- MLIP cleanup: release the calcstart copy's handles (these are
 !>    duplicates created by "calcstart = env%calc" and must be freed
 !>    independently from env%calc's handles)
-  do j = 1, calcstart%ncalculations
-    if (calcstart%calcs(j)%id == jobtype%libtorch) then
-      call libtorch_cleanup(calcstart%calcs(j))
-    end if
-    if (calcstart%calcs(j)%id == jobtype%pymlip) then
-      call pymlip_cleanup(calcstart%calcs(j))
-    end if
-    if (calcstart%calcs(j)%id == jobtype%ase_socket) then
-      call ase_socket_cleanup(calcstart%calcs(j))
-    end if
-  end do
+  call mlip_cleanup_all(calcstart)
 
 !>--- If we succeded and exited the above loop, estimate runtime for multiple MTDs
   rtime = profiler%get(counter)
@@ -374,17 +344,7 @@ subroutine trialOPT_calculator(env)
   call optimize_geometry(mol,molopt,tmpcalc,energy,grd,pr,wr,io)
 
 !>--- MLIP cleanup after trialOPT (release GPU/sockets for next step)
-  do i = 1, tmpcalc%ncalculations
-    if (tmpcalc%calcs(i)%id == jobtype%libtorch) then
-      call libtorch_cleanup(tmpcalc%calcs(i))
-    end if
-    if (tmpcalc%calcs(i)%id == jobtype%pymlip) then
-      call pymlip_cleanup(tmpcalc%calcs(i))
-    end if
-    if (tmpcalc%calcs(i)%id == jobtype%ase_socket) then
-      call ase_socket_cleanup(tmpcalc%calcs(i))
-    end if
-  end do
+  call mlip_cleanup_all(tmpcalc)
 
 !>--- check success
   success = (io == 0)

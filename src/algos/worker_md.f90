@@ -102,14 +102,7 @@ subroutine crest_worker_run(env)
   write(stdout, '(a,i0,a,i0)') 'Worker ', worker_index, ' finished, status=', term
 
   !>--- Cleanup MLIP handles
-  do j = 1, calc%ncalculations
-    if (calc%calcs(j)%id == jobtype%pymlip) then
-      call pymlip_cleanup(calc%calcs(j))
-    end if
-    if (calc%calcs(j)%id == jobtype%libtorch) then
-      call libtorch_cleanup(calc%calcs(j))
-    end if
-  end do
+  call mlip_cleanup_all(calc)
   call pymlip_finalize()
 
   !>--- Exit with appropriate status
@@ -240,10 +233,7 @@ subroutine crest_worker_opt_run(env)
                                  energies, opt_status)
 
   !>--- Cleanup
-  do j = 1, calc%ncalculations
-    if (calc%calcs(j)%id == jobtype%pymlip) call pymlip_cleanup(calc%calcs(j))
-    if (calc%calcs(j)%id == jobtype%libtorch) call libtorch_cleanup(calc%calcs(j))
-  end do
+  call mlip_cleanup_all(calc)
   call pymlip_finalize()
 
   call exit(0)

@@ -67,6 +67,10 @@ module crest_calculator
   public :: ase_socket_engrad
   public :: ase_socket_init
   public :: ase_socket_cleanup
+!>--- MLIP helper routines
+  public :: mlip_cleanup_all
+  public :: mlip_needs_process_parallel
+  public :: mlip_auto_batch_size
 !=========================================================================================!
 
 !>--- global engrad call counter
@@ -880,6 +884,68 @@ contains  !> MODULE PROCEDURES START HERE
     end if
 #endif
   end subroutine calc_ONIOM_projection
+
+!==========================================================================================!
+
+  subroutine mlip_cleanup_all(calc)
+!*******************************************************************
+!* Clean up all MLIP backends (libtorch, pymlip, ase_socket) for
+!* every calculation level in the given calcdata object.
+!* Idempotent: safe to call even if no MLIP backend was initialized.
+!* If calc%mlip_keep_loaded is true, skip cleanup (model persists).
+!*******************************************************************
+    implicit none
+    type(calcdata), intent(inout) :: calc
+    integer :: j
+    if (calc%mlip_keep_loaded) return
+    do j = 1, calc%ncalculations
+      if (calc%calcs(j)%id == jobtype%libtorch) call libtorch_cleanup(calc%calcs(j))
+      if (calc%calcs(j)%id == jobtype%pymlip) call pymlip_cleanup(calc%calcs(j))
+      if (calc%calcs(j)%id == jobtype%ase_socket) call ase_socket_cleanup(calc%calcs(j))
+    end do
+  end subroutine mlip_cleanup_all
+
+!==========================================================================================!
+
+  function mlip_needs_process_parallel(calc) result(needs)
+!*******************************************************************
+!* Check whether any calculation level in calc requires process-
+!* based parallelism (pymlip always, libtorch on GPU).
+!* pymlip:       Python GIL serializes all calls in threads
+!* libtorch GPU: forward_mutex serializes all forward passes
+!*******************************************************************
+    implicit none
+    type(calcdata), intent(in) :: calc
+    logical :: needs
+    integer :: j
+    needs = .false.
+    do j = 1, calc%ncalculations
+      if (calc%calcs(j)%id == jobtype%pymlip) needs = .true.
+      if (calc%calcs(j)%id == jobtype%libtorch .and. &
+          calc%calcs(j)%libtorch_device_id > 0) needs = .true.
+    end do
+  end function mlip_needs_process_parallel
+
+!==========================================================================================!
+
+  function mlip_auto_batch_size(nat) result(bsz)
+!*******************************************************************
+!* Auto-tune GPU batch size based on atom count.
+!*   nat < 30  -> 64  (small molecules, GPU can handle many)
+!*   nat < 100 -> 16  (medium, balance memory vs throughput)
+!*   nat >= 100 -> 4  (large, conserve GPU memory)
+!*******************************************************************
+    implicit none
+    integer, intent(in) :: nat
+    integer :: bsz
+    if (nat < 30) then
+      bsz = 64
+    else if (nat < 100) then
+      bsz = 16
+    else
+      bsz = 4
+    end if
+  end function mlip_auto_batch_size
 
 !==========================================================================================!
 !==========================================================================================!

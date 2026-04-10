@@ -190,10 +190,12 @@ int libtorch_has_mps(void);
 /*
  * Query GPU memory via CUDA runtime API.
  * Returns 0 on success, non-zero if CUDA unavailable.
- * total_bytes: total GPU memory in bytes
- * free_bytes:  available GPU memory in bytes
+ * device_index: CUDA device ordinal (0, 1, ...)
+ * total_bytes:  total GPU memory in bytes
+ * free_bytes:   available GPU memory in bytes
  */
-int libtorch_get_gpu_memory(long long* total_bytes, long long* free_bytes);
+int libtorch_get_gpu_memory(int device_index,
+                            long long* total_bytes, long long* free_bytes);
 
 #ifdef __cplusplus
 }

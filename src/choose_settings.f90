@@ -199,6 +199,9 @@ subroutine md_length_setup(env)
       'Note: MLIP detected. Consider using opt_engine="rfo" in TOML.'
     write(stdout,'(1x,a)') &
       '      ANCOPT (default) may oscillate with MLIP gradients.'
+    !>--- Enable model persistence across workflow steps to avoid
+    !>    reloading weights between MD, optimization, etc.
+    env%calc%mlip_keep_loaded = .true.
   end if
 
   return

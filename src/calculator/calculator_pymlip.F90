@@ -36,6 +36,8 @@ module calc_pymlip
   implicit none
   private
 
+  integer, parameter :: PYMLIP_ERR_LEN = 4096  !< error message buffer length
+
   public :: pymlip_engrad, pymlip_engrad_batch_f
   public :: pymlip_init, pymlip_cleanup, pymlip_finalize
   public :: pymlip_get_gpu_memory_f
@@ -137,7 +139,7 @@ contains
     integer, intent(out) :: iostat
 
 #ifdef WITH_PYMLIP
-    character(len=4096, kind=c_char) :: err_msg
+    character(len=PYMLIP_ERR_LEN, kind=c_char) :: err_msg
     character(len=512) :: model_type_c, model_path_c, device_c, task_c, refs_c
     character(len=512) :: compile_mode_c, dtype_c
     integer(c_int) :: rc, turbo_c
@@ -170,7 +172,7 @@ contains
 
     !> Initialize Python interpreter (idempotent)
     err_msg = ' '
-    rc = c_pymlip_init_python(err_msg, int(4096, c_int))
+    rc = c_pymlip_init_python(err_msg, int(PYMLIP_ERR_LEN, c_int))
     if (rc /= 0) then
       write(stdout,'(a)') '**ERROR** pymlip: failed to initialize Python'
       write(stdout,'(a)') '  ' // trim(err_msg)
@@ -222,7 +224,7 @@ contains
       model_type_c, model_path_c, device_c, task_c, refs_c, &
       int(calc%chrg, c_int), int(calc%uhf, c_int), &
       compile_mode_c, dtype_c, turbo_c, &
-      err_msg, int(4096, c_int))
+      err_msg, int(PYMLIP_ERR_LEN, c_int))
 
     if (.not. c_associated(calc%pymlip_handle)) then
       write(stdout,'(a)') '**ERROR** pymlip: failed to create calculator'
@@ -296,7 +298,7 @@ contains
     integer(c_int) :: status, nat_c
     integer :: i
     real(c_double) :: energy_c
-    character(len=4096, kind=c_char) :: err_msg
+    character(len=PYMLIP_ERR_LEN, kind=c_char) :: err_msg
 
     !> Debug timing
     integer(8) :: t_start, t_done, t_count_rate
@@ -310,7 +312,11 @@ contains
     !> Lazy initialization: create calculator on first call
     if (.not. c_associated(calc%pymlip_handle)) then
       call pymlip_init(calc, iostat)
-      if (iostat /= 0) return
+      if (iostat /= 0) then
+        energy = 0.0_wp
+        gradient = 0.0_wp
+        return
+      end if
     end if
 
     !> (Re)allocate threadprivate atomic number buffer if atom count changes
@@ -337,7 +343,7 @@ contains
       energy_c, &             !> energy output (Hartree)
       gradient(1, 1), &       !> gradient output (Hartree/Bohr)
       err_msg, &
-      int(4096, c_int))
+      int(PYMLIP_ERR_LEN, c_int))
 
     if (status /= 0) then
       write(stdout,'(a,i0,a)') '**ERROR** pymlip inference failed (status=', status, ')'
@@ -395,7 +401,7 @@ contains
     integer(c_int) :: status, nat_c, bs_c
     integer :: i
     integer(c_int), allocatable :: at_c(:)
-    character(len=4096, kind=c_char) :: err_msg
+    character(len=PYMLIP_ERR_LEN, kind=c_char) :: err_msg
 
     !> Debug timing
     integer(8) :: t_start, t_done, t_count_rate
@@ -429,7 +435,7 @@ contains
       energies(1), &
       grad_batch(1), &
       err_msg, &
-      int(4096, c_int))
+      int(PYMLIP_ERR_LEN, c_int))
 
     deallocate(at_c)
 

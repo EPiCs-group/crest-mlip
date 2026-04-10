@@ -121,18 +121,7 @@ subroutine crest_singlepoint(env,tim)
 
   deallocate (grad)
 !>--- MLIP cleanup: release GPU memory, close sockets, free Python objects.
-!>    Idempotent — safe to call even if backend was never initialized.
-  do j = 1, calc%ncalculations
-    if (calc%calcs(j)%id == jobtype%libtorch) then
-      call libtorch_cleanup(calc%calcs(j))
-    end if
-    if (calc%calcs(j)%id == jobtype%pymlip) then
-      call pymlip_cleanup(calc%calcs(j))
-    end if
-    if (calc%calcs(j)%id == jobtype%ase_socket) then
-      call ase_socket_cleanup(calc%calcs(j))
-    end if
-  end do
+  call mlip_cleanup_all(calc)
 !========================================================================================!
   return
 end subroutine crest_singlepoint

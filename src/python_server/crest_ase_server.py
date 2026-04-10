@@ -186,6 +186,15 @@ class CrestASEServer:
             charge = msg.get("charge", 0)
             uhf = msg.get("uhf", 0)
 
+            if len(atomic_numbers) != nat:
+                raise ValueError(
+                    f"atomic_numbers length {len(atomic_numbers)} != nat {nat}"
+                )
+            if len(positions_bohr) != 3 * nat:
+                raise ValueError(
+                    f"positions_bohr length {len(positions_bohr)} != 3*nat {3*nat}"
+                )
+
             # Convert positions from Bohr to Angstrom, reshape to (nat, 3)
             positions_ang = positions_bohr.reshape(nat, 3) * BOHR_TO_ANG
 
@@ -266,18 +275,6 @@ class CrestASEServer:
 # ----------------------------------------------------------------
 # Command-line interface
 # ----------------------------------------------------------------
-
-def _import_calculator(dotted_path):
-    """Import a calculator class from a dotted path like 'ase.calculators.emt.EMT'."""
-    parts = dotted_path.rsplit(".", 1)
-    if len(parts) != 2:
-        raise ValueError(f"Expected 'module.ClassName', got '{dotted_path}'")
-    module_path, class_name = parts
-    import importlib
-    module = importlib.import_module(module_path)
-    cls = getattr(module, class_name)
-    return cls()
-
 
 if __name__ == "__main__":
     import argparse

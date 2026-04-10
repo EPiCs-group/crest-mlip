@@ -62,7 +62,6 @@ class MACETorchScriptWrapper(torch.nn.Module):
         super().__init__()
         self.model = model
         self.cutoff = cutoff
-        self.z_table = z_table
         self.num_elements = len(z_table)
 
         # Register z_table as buffer for TorchScript
@@ -78,12 +77,8 @@ class MACETorchScriptWrapper(torch.nn.Module):
         return edge_index
 
     def _one_hot(self, atomic_numbers: torch.Tensor) -> torch.Tensor:
-        """Create one-hot encoding based on z_table."""
-        node_attrs = torch.zeros(atomic_numbers.shape[0], self.num_elements,
-                                dtype=positions.dtype, device=positions.device)
-        for i in range(self.num_elements):
-            node_attrs[:, i] = (atomic_numbers == self.z_table_tensor[i]).float()
-        return node_attrs
+        """Create one-hot encoding based on z_table (vectorized)."""
+        return (atomic_numbers.unsqueeze(1) == self.z_table_tensor.unsqueeze(0)).to(torch.float32)
 
     def forward(self, positions_bohr: torch.Tensor,
                 atomic_numbers: torch.Tensor):
@@ -106,13 +101,8 @@ class MACETorchScriptWrapper(torch.nn.Module):
         # Build neighbor list
         edge_index = self._build_graph(positions)
 
-        # One-hot node features
-        node_attrs = torch.zeros(nat, self.num_elements,
-                                dtype=torch.float32,
-                                device=positions.device)
-        for i in range(self.num_elements):
-            z_val = self.z_table_tensor[i]
-            node_attrs[:, i] = (atomic_numbers == z_val).float()
+        # One-hot node features (vectorized)
+        node_attrs = self._one_hot(atomic_numbers)
 
         # Edge vectors and shifts (non-periodic)
         num_edges = edge_index.shape[1]
@@ -163,8 +153,8 @@ class MACETorchScriptWrapper(torch.nn.Module):
 
         # Convert units
         energy_hartree = energy_ev * EV_TO_HARTREE
-        # gradient = -forces, eV/Ang -> Hartree/Bohr
-        gradient_hartree_bohr = forces_ev_ang * EV_TO_HARTREE / BOHR_TO_ANG
+        # forces_ev_ang = dE/dr (from autograd), convert eV/Ang -> Hartree/Bohr
+        gradient_hartree_bohr = forces_ev_ang * EV_TO_HARTREE * BOHR_TO_ANG
 
         return (energy_hartree.unsqueeze(0).to(torch.float64),
                 gradient_hartree_bohr.to(torch.float64))
@@ -230,7 +220,7 @@ def test_wrapper(wrapper, test_xyz, device='cpu'):
         ref_energy_ev = atoms.get_potential_energy()
         ref_forces = atoms.get_forces()
         ref_energy = ref_energy_ev * EV_TO_HARTREE
-        ref_gradient = -ref_forces * EV_TO_HARTREE / BOHR_TO_ANG
+        ref_gradient = -ref_forces * EV_TO_HARTREE * BOHR_TO_ANG
 
         energy_diff = abs(energy_val - ref_energy)
         grad_diff = np.max(np.abs(grad_np - ref_gradient))

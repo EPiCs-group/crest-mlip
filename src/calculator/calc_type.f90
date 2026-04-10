@@ -338,6 +338,10 @@ module calc_type
     integer :: eout_unit = stdout
     character(len=:),allocatable :: elog
 
+!>--- MLIP model persistence: when true, mlip_cleanup_all() skips freeing
+!>    handles, allowing the model to be reused across workflow steps.
+    logical :: mlip_keep_loaded = .false.
+
 !>--- ONIOM calculator data
     type(lwoniom_data),allocatable :: ONIOM
     type(coord),allocatable :: ONIOMmols(:)

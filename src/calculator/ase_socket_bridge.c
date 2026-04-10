@@ -31,6 +31,7 @@
 #include "ase_socket_bridge.h"
 
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
@@ -220,6 +221,13 @@ ase_socket_handle_t ase_socket_connect(const char* host, int port,
     /* Disable Nagle's algorithm for lower latency */
     int flag = 1;
     setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+
+    /* Set receive timeout to 300 seconds (5 min) to prevent hanging
+     * indefinitely if the Python server crashes during a calculation. */
+    struct timeval tv;
+    tv.tv_sec = 300;
+    tv.tv_usec = 0;
+    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     /* Send init message */
     const char* init_msg = "{\"type\":\"init\",\"version\":1}";

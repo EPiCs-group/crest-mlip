@@ -258,7 +258,7 @@ static const char* SETUP_CODE =
     "        # Convert units: eV -> Hartree, forces -> gradient\n"
     "        energy_hartree = energy_ev * EV_TO_HARTREE\n"
     "        # gradient = -forces, and convert eV/Ang -> Hartree/Bohr\n"
-    "        gradient_hartree_bohr = -forces_ev_ang * EV_TO_HARTREE / BOHR_TO_ANG\n"
+    "        gradient_hartree_bohr = -forces_ev_ang * EV_TO_HARTREE * BOHR_TO_ANG\n"
     "\n"
     "        return energy_hartree, gradient_hartree_bohr.ravel()\n"
     "\n"

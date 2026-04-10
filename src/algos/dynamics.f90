@@ -105,20 +105,7 @@ subroutine crest_moleculardynamics(env,tim)
     env%iostatus_meta = status_failed
   end if
 !>--- MLIP cleanup: release GPU memory, close sockets, free Python objects.
-!>    Must be called after each workflow step (MD, optimization, etc.) so
-!>    that subsequent steps can reinitialize cleanly.  Each cleanup is
-!>    idempotent — safe to call even if the backend was never initialized.
-  do j = 1, calc%ncalculations
-    if (calc%calcs(j)%id == jobtype%libtorch) then
-      call libtorch_cleanup(calc%calcs(j))
-    end if
-    if (calc%calcs(j)%id == jobtype%pymlip) then
-      call pymlip_cleanup(calc%calcs(j))
-    end if
-    if (calc%calcs(j)%id == jobtype%ase_socket) then
-      call ase_socket_cleanup(calc%calcs(j))
-    end if
-  end do
+  call mlip_cleanup_all(calc)
 !========================================================================================!
   call tim%stop(14)
   return

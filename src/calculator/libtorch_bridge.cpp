@@ -1340,7 +1340,8 @@ int libtorch_has_mps(void)
 }
 
 
-int libtorch_get_gpu_memory(long long* total_bytes, long long* free_bytes)
+int libtorch_get_gpu_memory(int device_index,
+                           long long* total_bytes, long long* free_bytes)
 {
     *total_bytes = 0;
     *free_bytes = 0;
@@ -1348,7 +1349,7 @@ int libtorch_get_gpu_memory(long long* total_bytes, long long* free_bytes)
     if (!torch::cuda::is_available()) return 1;
     try {
         size_t free_mem = 0, total_mem = 0;
-        auto device = torch::Device(torch::kCUDA, 0);
+        auto device = torch::Device(torch::kCUDA, device_index);
         c10::cuda::CUDAGuard guard(device);
         cudaMemGetInfo(&free_mem, &total_mem);
         *total_bytes = (long long)total_mem;
@@ -1436,7 +1437,7 @@ void libtorch_free(libtorch_handle_t) {}
 void libtorch_shared_free_all(void) {}
 int libtorch_has_cuda(void) { return 0; }
 int libtorch_has_mps(void) { return 0; }
-int libtorch_get_gpu_memory(long long* total_bytes, long long* free_bytes) {
+int libtorch_get_gpu_memory(int, long long* total_bytes, long long* free_bytes) {
     *total_bytes = 0; *free_bytes = 0; return 1;
 }
 

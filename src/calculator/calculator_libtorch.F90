@@ -38,6 +38,8 @@ module calc_libtorch
   implicit none
   private
 
+  integer, parameter :: LIBTORCH_ERR_LEN = 4096  !< error message buffer length
+
   public :: libtorch_engrad, libtorch_init, libtorch_cleanup
   public :: libtorch_set_threads, libtorch_init_shared
   public :: libtorch_engrad_batch_f, libtorch_shared_cleanup
@@ -184,9 +186,10 @@ module calc_libtorch
       integer(c_int) :: c_libtorch_get_cuda_device_count
     end function c_libtorch_get_cuda_device_count
 
-    function c_libtorch_get_gpu_memory(total_bytes, free_bytes) &
+    function c_libtorch_get_gpu_memory(device_index, total_bytes, free_bytes) &
         bind(C, name="libtorch_get_gpu_memory")
       import :: c_int, c_long_long
+      integer(c_int), value, intent(in) :: device_index
       integer(c_long_long), intent(out) :: total_bytes
       integer(c_long_long), intent(out) :: free_bytes
       integer(c_int) :: c_libtorch_get_gpu_memory
@@ -204,7 +207,7 @@ contains
     integer, intent(out) :: iostat
 
 #ifdef WITH_LIBTORCH
-    character(len=4096, kind=c_char) :: err_msg
+    character(len=LIBTORCH_ERR_LEN, kind=c_char) :: err_msg
     character(len=512) :: model_path_c
 
     iostat = 0
@@ -238,7 +241,7 @@ contains
       int(calc%libtorch_model_format, c_int), &
       real(calc%libtorch_cutoff, c_double), &
       err_msg, &
-      int(4096, c_int))
+      int(LIBTORCH_ERR_LEN, c_int))
 
     if (.not. c_associated(calc%libtorch_handle)) then
       write(stdout,'(a)') '**ERROR** libtorch: failed to load model'
@@ -303,7 +306,7 @@ contains
     integer(c_int) :: status, nat_c
     integer :: i
     real(c_double) :: energy_c
-    character(len=4096, kind=c_char) :: err_msg
+    character(len=LIBTORCH_ERR_LEN, kind=c_char) :: err_msg
 
     !> Debug timing
     integer(8) :: t_start, t_done, t_count_rate
@@ -344,10 +347,10 @@ contains
       energy_c, &             !> energy output (Hartree)
       gradient(1, 1), &       !> gradient output (Hartree/Bohr), flat [3*nat]
       err_msg, &
-      int(4096, c_int))
+      int(LIBTORCH_ERR_LEN, c_int))
 
     if (status /= 0) then
-      write(stdout,'(a,i0)') '**ERROR** libtorch inference failed (status=', status
+      write(stdout,'(a,i0,a)') '**ERROR** libtorch inference failed (status=', status, ')'
       write(stdout,'(a)') '  ' // trim(err_msg)
       iostat = 1
       energy = 0.0_wp
@@ -397,7 +400,7 @@ contains
     integer, intent(out) :: iostat
 
 #ifdef WITH_LIBTORCH
-    character(len=4096, kind=c_char) :: err_msg
+    character(len=LIBTORCH_ERR_LEN, kind=c_char) :: err_msg
     character(len=512) :: model_path_c
 
     iostat = 0
@@ -425,7 +428,7 @@ contains
       int(calc%libtorch_model_format, c_int), &
       real(calc%libtorch_cutoff, c_double), &
       err_msg, &
-      int(4096, c_int))
+      int(LIBTORCH_ERR_LEN, c_int))
 
     if (.not. c_associated(calc%libtorch_handle)) then
       write(stdout,'(a)') '**ERROR** libtorch: failed to load shared model'
@@ -462,7 +465,7 @@ contains
     integer(c_int) :: status
     integer :: i
     integer(c_int), allocatable :: at_c(:)
-    character(len=4096, kind=c_char) :: err_msg
+    character(len=LIBTORCH_ERR_LEN, kind=c_char) :: err_msg
     integer(8) :: t_start, t_done, t_count_rate
     real(wp) :: dt_total
 
@@ -497,12 +500,12 @@ contains
       energies(1), &
       grad_batch(1), &
       err_msg, &
-      int(4096, c_int))
+      int(LIBTORCH_ERR_LEN, c_int))
 
     deallocate(at_c)
 
     if (status /= 0) then
-      write(stdout,'(a,i0)') '**ERROR** libtorch batch inference failed (status=', status
+      write(stdout,'(a,i0,a)') '**ERROR** libtorch batch inference failed (status=', status, ')'
       write(stdout,'(a)') '  ' // trim(err_msg)
       iostat = 1
       return
@@ -556,7 +559,7 @@ contains
     integer(c_int) :: status
     integer :: i
     integer(c_int), allocatable :: at_c(:)
-    character(len=4096, kind=c_char) :: err_msg
+    character(len=LIBTORCH_ERR_LEN, kind=c_char) :: err_msg
 
     iostat = 0
 
@@ -577,7 +580,7 @@ contains
       energies(1), &
       gradients(1), &
       err_msg, &
-      int(4096, c_int))
+      int(LIBTORCH_ERR_LEN, c_int))
 
     deallocate(at_c)
 
@@ -616,7 +619,7 @@ contains
     integer(c_int) :: status
     integer :: i
     integer(c_int), allocatable :: at_c(:)
-    character(len=4096, kind=c_char) :: err_msg
+    character(len=LIBTORCH_ERR_LEN, kind=c_char) :: err_msg
 
     iostat = 0
 
@@ -637,7 +640,7 @@ contains
       energies(1), &
       gradients(1), &
       err_msg, &
-      int(4096, c_int))
+      int(LIBTORCH_ERR_LEN, c_int))
 
     deallocate(at_c)
 
@@ -666,7 +669,7 @@ contains
     integer, intent(out) :: iostat
 
 #ifdef WITH_LIBTORCH
-    character(len=4096, kind=c_char) :: err_msg
+    character(len=LIBTORCH_ERR_LEN, kind=c_char) :: err_msg
     character(len=512) :: model_path_c
 
     iostat = 0
@@ -681,7 +684,7 @@ contains
       int(calc%libtorch_model_format, c_int), &
       real(calc%libtorch_cutoff, c_double), &
       err_msg, &
-      int(4096, c_int))
+      int(LIBTORCH_ERR_LEN, c_int))
 
     if (.not. c_associated(handle_out)) then
       write(stdout,'(a,i0)') '**ERROR** libtorch: failed to load model on CUDA:', &
@@ -710,14 +713,19 @@ contains
 
 
   !> Query GPU memory via CUDA runtime API.
-  subroutine libtorch_get_gpu_memory_f(total_bytes, free_bytes, iostat)
+  !> device_index: CUDA device ordinal (0, 1, ...), default 0
+  subroutine libtorch_get_gpu_memory_f(total_bytes, free_bytes, iostat, device_index)
     implicit none
     integer(8), intent(out) :: total_bytes, free_bytes
     integer, intent(out) :: iostat
+    integer, intent(in), optional :: device_index
+    integer :: dev_idx
 #ifdef WITH_LIBTORCH
     integer(c_int) :: rc
     integer(c_long_long) :: total_c, free_c
-    rc = c_libtorch_get_gpu_memory(total_c, free_c)
+    dev_idx = 0
+    if (present(device_index)) dev_idx = device_index
+    rc = c_libtorch_get_gpu_memory(int(dev_idx, c_int), total_c, free_c)
     total_bytes = int(total_c, 8)
     free_bytes = int(free_c, 8)
     iostat = int(rc)

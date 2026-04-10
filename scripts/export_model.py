@@ -117,11 +117,10 @@ class UMAWrapper(torch.nn.Module):
     Output: (energy_hartree[1], gradient_hartree_bohr[nat,3])
     """
 
-    def __init__(self, model, cutoff: float, max_neighbors: int = 50):
+    def __init__(self, model, cutoff: float):
         super().__init__()
         self.model = model
         self.cutoff = cutoff
-        self.max_neighbors = max_neighbors
 
         # Store conversion constants as buffers (included in TorchScript)
         self.register_buffer('_bohr_to_ang',
@@ -236,16 +235,9 @@ class MACEWrapper(torch.nn.Module):
 
         num_edges = edge_index.shape[1]
 
-        # Build one-hot node attributes via z_table lookup
-        # z_table[atomic_number] = index in one-hot encoding
-        z_indices = torch.zeros(nat, dtype=torch.long, device=device)
-        for i in range(nat):
-            z_val = z[i].item()
-            # Find index in z_table
-            for j in range(self.z_table.shape[0]):
-                if self.z_table[j].item() == z_val:
-                    z_indices[i] = j
-                    break
+        # Build one-hot node attributes via vectorized z_table lookup
+        # z_table is sorted, so searchsorted gives O(nat * log(num_elements))
+        z_indices = torch.searchsorted(self.z_table, z)
 
         node_attrs = torch.zeros(nat, self.num_elements,
                                  dtype=compute_dtype, device=device)

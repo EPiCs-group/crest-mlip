@@ -144,46 +144,8 @@ contains !> MODULE PROCEDURES START HERE
       end do
     end if
 
-!>--- constrain all X-H only
-100 if (shk%shake_mode == 1) then
-      ij = nat*(nat+1)/2
-      allocate (cons2(2,ij),source=0)
-      do i = 1,nat
-        if (at(i) .eq. 1) then
-          minrij = 1000.0_wp
-          do j = 1,nat
-            if (j .ne. i) then
-
-              !> check if BOTH are frozen
-              if (checkfreeze.and.j <= nfrz.and.i <= nfrz) then
-                if (shk%freezeptr(i).and.shk%freezeptr(j)) cycle
-              end if
-
-              rij = (xyz(1,i)-xyz(1,j))**2+(xyz(2,i)-xyz(2,j))**2+(xyz(3,i)-xyz(3,j))**2
-              if (rij .lt. minrij) then
-                minrij = rij
-                jmin = j
-              end if
-            end if
-          end do
-          if (at(jmin) .eq. 1) then
-            if (jmin .gt. i) then
-              nconsu = nconsu+1
-              n2 = n2+1
-              cons2(1,n2) = i
-              cons2(2,n2) = jmin
-            end if
-          else
-            nconsu = nconsu+1
-            n2 = n2+1
-            cons2(1,n2) = i
-            cons2(2,n2) = jmin
-          end if
-        end if
-      end do
-    end if
-
-!>--- SHAKE all bonds
+!>--- SHAKE all bonds (mode 2) — must be checked first since it may
+!>    fall back to mode 1 if no WBO data is available.
     if (shk%shake_mode == 2) then
       if (allocated(shk%wbo)) then
         ij = nat*(nat+1)/2
@@ -231,17 +193,52 @@ contains !> MODULE PROCEDURES START HERE
         deallocate (list)
       else
         !>--- No WBO matrix available for all-bond SHAKE (mode 2).
-        !>    This happens when: (a) the MLIP calculator doesn't provide WBOs,
-        !>    AND (b) the GFN-FF topology WBO fallback in trialMD_calculator()
-        !>    also failed.  Gracefully degrade to mode 1 (X-H bonds only),
+        !>    Gracefully degrade to mode 1 (X-H bonds only),
         !>    which needs no WBOs — just finds each H's nearest neighbor.
-        write (*,*) 'No bonding information (WBO) available.'
-        write (*,*) 'Falling back to SHAKE mode 1 (X-H bonds only).'
+        write (stdout,'(a)') 'WARNING: SHAKE mode 2 (all bonds) requested but no '// &
+          'bonding information (WBO) available. Falling back to mode 1 (X-H only).'
         shk%shake_mode = 1
-        goto 100
       end if
     end if
 
+!>--- constrain all X-H only (mode 1) — also reached via mode-2 fallback
+    if (shk%shake_mode == 1) then
+      ij = nat*(nat+1)/2
+      allocate (cons2(2,ij),source=0)
+      do i = 1,nat
+        if (at(i) .eq. 1) then
+          minrij = 1000.0_wp
+          do j = 1,nat
+            if (j .ne. i) then
+
+              !> check if BOTH are frozen
+              if (checkfreeze.and.j <= nfrz.and.i <= nfrz) then
+                if (shk%freezeptr(i).and.shk%freezeptr(j)) cycle
+              end if
+
+              rij = (xyz(1,i)-xyz(1,j))**2+(xyz(2,i)-xyz(2,j))**2+(xyz(3,i)-xyz(3,j))**2
+              if (rij .lt. minrij) then
+                minrij = rij
+                jmin = j
+              end if
+            end if
+          end do
+          if (at(jmin) .eq. 1) then
+            if (jmin .gt. i) then
+              nconsu = nconsu+1
+              n2 = n2+1
+              cons2(1,n2) = i
+              cons2(2,n2) = jmin
+            end if
+          else
+            nconsu = nconsu+1
+            n2 = n2+1
+            cons2(1,n2) = i
+            cons2(2,n2) = jmin
+          end if
+        end if
+      end do
+    end if
     shk%initialized = .true.
 
     shk%ncons = nconsu
