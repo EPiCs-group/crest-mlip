@@ -415,7 +415,12 @@ subroutine crest_worker_pool_run(env, fd_read, fd_write, worker_idx)
         end if
       end do
 
-      !>--- Allocate working arrays
+      !>--- Allocate working arrays (deallocate first if reused from prior task)
+      if (allocated(mol%at)) deallocate(mol%at)
+      if (allocated(mol%xyz)) deallocate(mol%xyz)
+      if (allocated(molnew%at)) deallocate(molnew%at)
+      if (allocated(molnew%xyz)) deallocate(molnew%xyz)
+      if (allocated(grd)) deallocate(grd)
       allocate(mol%at(nat), mol%xyz(3, nat))
       allocate(molnew%at(nat), molnew%xyz(3, nat))
       allocate(grd(3, nat), source=0.0_wp)
