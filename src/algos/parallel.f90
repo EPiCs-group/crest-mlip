@@ -712,6 +712,97 @@ subroutine crest_oloop(env,nat,nall,at,xyz,eread,dump,customcalc)
   nested = env%omp_allow_nested
 
 !==========================================================================!
+!> BATCHED RFO GPU PATH: optimize all structures in parent process
+!> using lockstep iteration with batched GPU engrad calls.
+!> No worker processes needed — one process, one GPU, all structures.
+!==========================================================================!
+  block
+    use iso_c_binding, only: c_associated
+    logical :: use_batch_rfo
+    integer, allocatable :: opt_stat(:)
+
+    use_batch_rfo = .false.
+    if (mycalc%opt_engine == 2 .and. mycalc%ncalculations == 1) then
+      if (mycalc%calcs(1)%id == jobtype%pymlip .and. &
+          allocated(mycalc%calcs(1)%pymlip_device)) then
+        if (mycalc%calcs(1)%pymlip_device /= 'cpu') use_batch_rfo = .true.
+      end if
+      if (mycalc%calcs(1)%id == jobtype%libtorch .and. &
+          mycalc%calcs(1)%libtorch_device_id > 0) then
+        use_batch_rfo = .true.
+      end if
+    end if
+
+    if (use_batch_rfo .and. nall > 0) then
+
+      write(stdout,'(/,1x,a)') 'Using batched RFO GPU optimization (parent process)'
+      call print_opt_data(mycalc, stdout)
+
+      !>--- Initialize MLIP model in parent process
+      do j = 1, mycalc%ncalculations
+        if (mycalc%calcs(j)%id == jobtype%pymlip) then
+          if (.not. c_associated(mycalc%calcs(j)%pymlip_handle)) then
+            call pymlip_init(mycalc%calcs(j), io)
+            if (io /= 0) then
+              write(stdout,'(a)') '**ERROR** pymlip init failed for batched RFO'
+              goto 399  ! fall through to other paths
+            end if
+          end if
+        end if
+        if (mycalc%calcs(j)%id == jobtype%libtorch) then
+          if (.not. c_associated(mycalc%calcs(j)%libtorch_handle)) then
+            call libtorch_init_shared(mycalc%calcs(j), io)
+            if (io /= 0) then
+              write(stdout,'(a)') '**ERROR** libtorch init failed for batched RFO'
+              goto 399
+            end if
+          end if
+        end if
+      end do
+
+      call profiler%init(1)
+      call profiler%start(1)
+
+      allocate(opt_stat(nall))
+      call rfopt_batch(nall, nat, at, xyz, mycalc, eread, opt_stat, .true.)
+
+      c = count(opt_stat == 0)
+      call profiler%stop(1)
+
+      percent = float(c)/float(nall)*100.0_wp
+      write (atmp,'(f5.1,a)') percent,'% success)'
+      write (stdout,'(">",1x,i0,a,i0,a,a)') c,' of ',nall, &
+        ' structures successfully optimized (', trim(adjustl(atmp))
+      write (atmp,'(">",1x,a,i0,a)') 'Total runtime for ',nall, &
+        ' optimizations:'
+      call profiler%write_timing(stdout,1,trim(atmp),.true.)
+
+      if (dump) then
+        open (newunit=ich,file=ensemblefile)
+        open (newunit=ich2,file=ensembleelog)
+        do i = 1,nall
+          if (opt_stat(i) == 0 .and. eread(i) /= 0.0_wp) then
+            write (ich,'(2x,i0)') nat
+            write (ich,'(2x,f25.15)') eread(i)
+            do j = 1,nat
+              write (ich,'(a2,3F24.14)') i2e(at(j),'nc'), &
+                xyz(1,j,i),xyz(2,j,i),xyz(3,j,i)
+            end do
+          end if
+        end do
+        close (ich)
+        close (ich2)
+      end if
+
+      deallocate(opt_stat)
+      call profiler%clear()
+      return
+
+    end if
+399 continue
+  end block
+
+!==========================================================================!
 !> PROCESS-BASED OPTIMIZATION (pymlip/libtorch GPU — bypasses GIL/mutex)
 !==========================================================================!
   use_process_parallel = mlip_needs_process_parallel(mycalc)

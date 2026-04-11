@@ -34,10 +34,12 @@ module rfo_module
   use modelhessian_module
   use hessupdate_module
   use optimize_utils
+!$ use omp_lib
   implicit none
   private
 
   public :: rfopt
+  public :: rfopt_batch
 
 !========================================================================================!
 !========================================================================================!
@@ -477,6 +479,460 @@ contains  !> MODULE PROCEDURES START HERE
 
     return
   end subroutine rfopt
+
+!========================================================================================!
+!========================================================================================!
+
+  subroutine rfopt_batch(nall, nat, at, xyz_all, calc, energies_out, &
+                         status_out, pr)
+!***********************************************************************
+!> Batched RFO optimizer: optimizes nall structures simultaneously
+!> using lockstep iteration with batched energy+gradient GPU calls.
+!>
+!> All structures advance through the RFO algorithm together.
+!> At each step, a single batched GPU call evaluates energies and
+!> gradients for all active (not yet converged) structures.
+!> CPU work (Hessian update, RF solve) is parallelized with OpenMP.
+!>
+!> Input/Output:
+!>   nall         - number of structures
+!>   nat          - atoms per structure (all same)
+!>   at(nat)      - atomic numbers
+!>   xyz_all(3,nat,nall) - coordinates in Bohr, overwritten with optimized
+!>   calc         - calculation settings (thresholds, MLIP handles)
+!>   pr           - print progress
+!> Output:
+!>   energies_out(nall) - final energies
+!>   status_out(nall)   - 0=converged, >0=maxcycle reached, <0=error
+!***********************************************************************
+    implicit none
+    !> Arguments
+    integer, intent(in) :: nall, nat
+    integer, intent(in) :: at(nat)
+    real(wp), intent(inout) :: xyz_all(3, nat, nall)
+    type(calcdata), intent(in) :: calc
+    real(wp), intent(out) :: energies_out(nall)
+    integer, intent(out) :: status_out(nall)
+    logical, intent(in) :: pr
+
+    !> Dimensions
+    integer :: nat3, npvar, nvar1, npvar1
+    integer :: maxcycle, iupdat
+    real(wp) :: ethr, gthr, hguess, maxdispl
+    logical :: exact
+
+    !> Per-structure state (struct of arrays)
+    real(wp), allocatable :: xyz(:,:)      ! (nat3, nall)
+    real(wp), allocatable :: grd(:,:)      ! (nat3, nall)
+    real(wp), allocatable :: gold(:,:)     ! (nat3, nall)
+    real(wp), allocatable :: displ(:,:)    ! (nat3, nall)
+    real(wp), allocatable :: hess(:,:)     ! (npvar, nall)
+    real(wp), allocatable :: energy(:)     ! (nall)
+    real(wp), allocatable :: eold(:)       ! (nall)
+    real(wp), allocatable :: gnorm(:)      ! (nall)
+    real(wp), allocatable :: gnold(:)      ! (nall)
+    integer, allocatable  :: siter(:)      ! (nall) step counter
+    integer, allocatable  :: sstatus(:)    ! (nall) 0=active,1=converged,-1=failed
+
+    !> Active set
+    integer :: nactive
+    integer, allocatable :: amap(:)        ! active index -> global index
+
+    !> Batch I/O buffers
+    real(wp), allocatable :: pos_batch(:)  ! (nat3 * nactive)
+    real(wp), allocatable :: e_batch(:)    ! (nactive)
+    real(wp), allocatable :: g_batch(:)    ! (nat3 * nactive)
+
+    !> Loop variables
+    integer :: step, ia, ig, i, j, k, io, nconv, nfail
+    real(wp) :: echng, alp, depred, maxd, dsnrm, gnrm
+    logical :: econverged, gconverged, lowered
+    integer :: gpu_batch_sz
+
+    !> Per-thread RF workspace (allocated once, indexed by thread)
+    integer :: nthreads, tid
+    real(sp), allocatable :: Aaug_t(:,:)   ! (npvar1, nthreads)
+    real(sp), allocatable :: Uaug_t(:,:)   ! (nvar1, nthreads)
+    real(sp), allocatable :: eaug_t(:,:)   ! (nvar1, nthreads)
+    real(sp), parameter :: r4dum = 1.e-8
+
+    !> BLAS externals
+    real(wp), external :: ddot
+    real(sp), external :: sdot
+
+    !> Timing
+    integer(8) :: t0, t1, trate
+    real(wp) :: dt_gpu, dt_cpu
+
+    !>=========================================================================
+    !> SETUP
+    !>=========================================================================
+    nat3 = 3 * nat
+    npvar = nat3 * (nat3 + 1) / 2
+    nvar1 = nat3 + 1
+    npvar1 = nvar1 * (nvar1 + 1) / 2
+
+    maxcycle = calc%maxcycle
+    iupdat = calc%iupdat
+    hguess = calc%hguess
+    maxdispl = calc%maxdispl_opt
+    exact = calc%exact_rf
+    call get_optthr(nat, calc%optlev, calc, ethr, gthr)
+
+    gpu_batch_sz = mlip_auto_batch_size(nat)
+
+    !> Allocate per-structure state
+    allocate(xyz(nat3, nall), grd(nat3, nall), gold(nat3, nall))
+    allocate(displ(nat3, nall), source=0.0_wp)
+    allocate(hess(npvar, nall))
+    allocate(energy(nall), eold(nall), gnorm(nall), gnold(nall))
+    allocate(siter(nall), source=0)
+    allocate(sstatus(nall), source=0)  ! 0 = active
+    allocate(amap(nall))
+
+    !> Copy input coordinates to flat layout
+    do i = 1, nall
+      xyz(:, i) = reshape(xyz_all(:, :, i), [nat3])
+    end do
+
+    !> Initialize Hessians to hguess * I (diagonal)
+    hess = 0.0_wp
+    do i = 1, nall
+      k = 0
+      do j = 1, nat3
+        k = k + j  ! index of diagonal element (j,j)
+        hess(k, i) = hguess
+      end do
+    end do
+
+    !> Initialize active set (all structures)
+    nactive = nall
+    do i = 1, nall
+      amap(i) = i
+    end do
+
+    !> Allocate per-thread RF workspace
+    nthreads = 1
+    !$ nthreads = omp_get_max_threads()
+    allocate(Aaug_t(npvar1, nthreads), source=0.0_sp)
+    allocate(Uaug_t(nvar1, nthreads), source=0.0_sp)
+    allocate(eaug_t(nvar1, nthreads), source=0.0_sp)
+
+    if (pr) then
+      write(stdout, '(/,1x,a,i0,a)') &
+        'Batched RFO optimization of ', nall, ' structures'
+      write(stdout, '(1x,a,i0,a,e10.3,a,e10.3)') &
+        'maxcycle=', maxcycle, '  ethr=', ethr, '  gthr=', gthr
+      write(stdout, '(1x,a,i0,a,i0)') &
+        'GPU batch size=', gpu_batch_sz, '  OMP threads=', nthreads
+    end if
+
+    !>=========================================================================
+    !> INITIAL BATCH ENGRAD (step 0)
+    !>=========================================================================
+    allocate(pos_batch(nat3 * nactive))
+    allocate(e_batch(nactive), g_batch(nat3 * nactive))
+
+    !> Collect all positions
+    do ia = 1, nactive
+      ig = amap(ia)
+      pos_batch((ia-1)*nat3+1 : ia*nat3) = xyz(:, ig)
+    end do
+
+    !> Batched GPU call (sub-batched if needed)
+    call batch_engrad_sub(calc, nactive, nat, nat3, at, pos_batch, &
+                          e_batch, g_batch, gpu_batch_sz, io)
+    if (io /= 0) then
+      if (pr) write(stdout, '(a)') '**ERROR** Initial batch engrad failed'
+      status_out = -1
+      energies_out = 0.0_wp
+      return
+    end if
+
+    !> Distribute results
+    do ia = 1, nactive
+      ig = amap(ia)
+      energy(ig) = e_batch(ia)
+      grd(:, ig) = g_batch((ia-1)*nat3+1 : ia*nat3)
+      gnorm(ig) = norm2(grd(:, ig))
+    end do
+
+    deallocate(pos_batch, e_batch, g_batch)
+
+    !>=========================================================================
+    !> MAIN OPTIMIZATION LOOP
+    !>=========================================================================
+    do step = 1, maxcycle
+      if (nactive == 0) exit
+
+      call system_clock(t0, trate)
+
+      !>--- Save old state for all active structures
+      do ia = 1, nactive
+        ig = amap(ia)
+        gold(:, ig) = grd(:, ig)
+        gnold(ig) = gnorm(ig)
+        eold(ig) = energy(ig)
+        siter(ig) = siter(ig) + 1
+      end do
+
+      !>--- Per-structure CPU work: Hessian update + RF solve + coordinate step
+      !>    (before the engrad call — we update coords first, then evaluate)
+      !$omp parallel do default(none) &
+      !$omp shared(nactive, amap, nat3, npvar, nvar1, npvar1, &
+      !$omp        hess, grd, gold, displ, xyz, gnorm, energy, eold, &
+      !$omp        siter, sstatus, iupdat, exact, maxdispl, ethr, gthr) &
+      !$omp private(ia, ig, echng, alp, depred, maxd, dsnrm, gnrm, tid, &
+      !$omp         econverged, gconverged, lowered, i, k) &
+      !$omp firstprivate(r4dum) &
+      !$omp shared(Aaug_t, Uaug_t, eaug_t)
+      do ia = 1, nactive
+        ig = amap(ia)
+        if (sstatus(ig) /= 0) cycle
+
+        !> Check convergence from previous step's engrad
+        echng = energy(ig) - eold(ig)
+        econverged = abs(echng) < ethr
+        gconverged = gnorm(ig) < gthr
+        lowered = echng < 0.0_wp
+        if (siter(ig) > 1 .and. econverged .and. gconverged .and. lowered) then
+          sstatus(ig) = 1  ! converged
+          cycle
+        end if
+
+        !> Guard against divergence
+        if (gnorm(ig) > 500.0_wp) then
+          sstatus(ig) = -1
+          cycle
+        end if
+
+        !> Hessian update (BFGS default)
+        if (siter(ig) > 1) then
+          select case (iupdat)
+          case (0)
+            call bfgs(nat3, gnorm(ig), grd(:,ig), gold(:,ig), displ(:,ig), hess(:,ig))
+          case (1)
+            call powell(nat3, gnorm(ig), grd(:,ig), gold(:,ig), displ(:,ig), hess(:,ig))
+          case (2)
+            call sr1(nat3, gnorm(ig), grd(:,ig), gold(:,ig), displ(:,ig), hess(:,ig))
+          case (3)
+            call bofill(nat3, gnorm(ig), grd(:,ig), gold(:,ig), displ(:,ig), hess(:,ig))
+          case (4)
+            call schlegel(nat3, gnorm(ig), grd(:,ig), gold(:,ig), displ(:,ig), hess(:,ig))
+          end select
+        end if
+
+        !> Dynamic step scaling based on gradient norm
+        alp = 1.0d-1
+        gnrm = gnorm(ig)
+        if (gnrm < 0.002_wp) alp = 1.5d-1
+        if (gnrm < 0.0006_wp) alp = 2.0d-1
+        if (gnrm < 0.0003_wp) alp = 3.0d-1
+
+        !> Solve RF eigenvalue problem (thread-local workspace)
+        tid = 1
+        !$ tid = omp_get_thread_num() + 1
+
+        !> Build augmented Hessian
+        Aaug_t(1:npvar, tid) = real(hess(1:npvar, ig), sp)
+        Aaug_t(npvar+1:npvar1-1, tid) = real(grd(1:nat3, ig), sp)
+        Aaug_t(npvar1, tid) = 0.0_sp
+
+        !> Steepest descent guess for first iteration
+        if (siter(ig) == 1) then
+          Uaug_t(1:nat3, tid) = -real(grd(1:nat3, ig), sp)
+          Uaug_t(nvar1, tid) = 1.0_sp
+          dsnrm = sqrt(sdot(nvar1, Uaug_t(1,tid), 1, Uaug_t(1,tid), 1))
+          if (dsnrm > 0.0_sp) Uaug_t(:, tid) = Uaug_t(:, tid) / real(dsnrm, sp)
+        end if
+
+        !> Solve (use exact solver for small systems, Davidson otherwise)
+        block
+          logical :: rf_fail
+          rf_fail = .false.
+          if (exact .or. nvar1 < 50) then
+            call solver_sspevx(nvar1, r4dum, Aaug_t(1,tid), &
+                               Uaug_t(1,tid), eaug_t(1,tid), rf_fail)
+          else
+            call solver_sdavidson(nvar1, r4dum, Aaug_t(1,tid), &
+                                  Uaug_t(1,tid), eaug_t(1,tid), rf_fail, .false.)
+            if (rf_fail) then
+              call solver_sspevx(nvar1, r4dum, Aaug_t(1,tid), &
+                                 Uaug_t(1,tid), eaug_t(1,tid), rf_fail)
+            end if
+          end if
+
+          if (rf_fail .or. abs(Uaug_t(nvar1, tid)) < 1.e-10) then
+            sstatus(ig) = -1
+            cycle
+          end if
+        end block
+
+        !> Extract displacement from eigenvector
+        displ(1:nat3, ig) = real(Uaug_t(1:nat3, tid), wp) / &
+                             real(Uaug_t(nvar1, tid), wp)
+
+        !> Rescale if too large
+        maxd = alp * sqrt(ddot(nat3, displ(1,ig), 1, displ(1,ig), 1))
+        if (maxd > maxdispl) then
+          displ(:, ig) = maxdispl * displ(:, ig) / maxd
+        end if
+
+        !> Update coordinates
+        xyz(:, ig) = xyz(:, ig) + displ(:, ig) * alp
+      end do
+      !$omp end parallel do
+
+      !>--- Rebuild active set
+      nconv = 0
+      nfail = 0
+      nactive = 0
+      do i = 1, nall
+        if (sstatus(i) == 0) then
+          nactive = nactive + 1
+          amap(nactive) = i
+        else if (sstatus(i) == 1) then
+          nconv = nconv + 1
+        else
+          nfail = nfail + 1
+        end if
+      end do
+
+      call system_clock(t1)
+      dt_cpu = real(t1 - t0, wp) / real(trate, wp)
+
+      !>--- Progress output
+      if (pr .and. (mod(step, 10) == 0 .or. step == 1 .or. nactive == 0)) then
+        write(stdout, '(1x,a,i4,a,i0,a,i0,a,i0,a,f6.1,a)') &
+          'Step ', step, ': ', nactive, ' active, ', nconv, &
+          ' converged, ', nfail, ' failed  (', dt_cpu*1000.0_wp, ' ms)'
+      end if
+
+      if (nactive == 0) exit
+
+      !>--- Batch engrad for all remaining active structures
+      call system_clock(t0)
+      allocate(pos_batch(nat3 * nactive))
+      allocate(e_batch(nactive), g_batch(nat3 * nactive))
+
+      do ia = 1, nactive
+        ig = amap(ia)
+        pos_batch((ia-1)*nat3+1 : ia*nat3) = xyz(:, ig)
+      end do
+
+      call batch_engrad_sub(calc, nactive, nat, nat3, at, pos_batch, &
+                            e_batch, g_batch, gpu_batch_sz, io)
+
+      if (io /= 0) then
+        if (pr) write(stdout, '(a,i0)') '**ERROR** Batch engrad failed at step ', step
+        !> Mark all remaining as failed
+        do ia = 1, nactive
+          sstatus(amap(ia)) = -1
+        end do
+        deallocate(pos_batch, e_batch, g_batch)
+        exit
+      end if
+
+      do ia = 1, nactive
+        ig = amap(ia)
+        energy(ig) = e_batch(ia)
+        grd(:, ig) = g_batch((ia-1)*nat3+1 : ia*nat3)
+        gnorm(ig) = norm2(grd(:, ig))
+      end do
+
+      deallocate(pos_batch, e_batch, g_batch)
+
+      call system_clock(t1)
+      dt_gpu = real(t1 - t0, wp) / real(trate, wp)
+
+    end do  !> step loop
+
+    !>=========================================================================
+    !> WRITE BACK RESULTS
+    !>=========================================================================
+    do i = 1, nall
+      xyz_all(:, :, i) = reshape(xyz(:, i), [3, nat])
+      energies_out(i) = energy(i)
+      if (sstatus(i) == 1) then
+        status_out(i) = 0  ! converged
+      else if (sstatus(i) == -1) then
+        status_out(i) = -1  ! failed
+      else
+        !> Not converged within maxcycle
+        if (calc%anopt) then
+          status_out(i) = 0  ! accept partial optimization
+        else
+          status_out(i) = siter(i)  ! return step count as status
+        end if
+      end if
+    end do
+
+    nconv = count(status_out == 0)
+    nfail = count(status_out < 0)
+    if (pr) then
+      write(stdout, '(/,1x,a,i0,a,i0,a,i0,a,i0,a)') &
+        'Batched RFO complete: ', nconv, ' converged, ', &
+        nall - nconv - nfail, ' not converged, ', nfail, ' failed (of ', nall, ')'
+    end if
+
+    !> Cleanup
+    deallocate(xyz, grd, gold, displ, hess)
+    deallocate(energy, eold, gnorm, gnold, siter, sstatus, amap)
+    deallocate(Aaug_t, Uaug_t, eaug_t)
+
+  contains
+
+    !> Sub-batched engrad dispatch: handles GPU batch size limits
+    subroutine batch_engrad_sub(calc, nstructs, nat, nat3, at, &
+                                pos, energies, gradients, bsz, iostat)
+      type(calcdata), intent(in) :: calc
+      integer, intent(in) :: nstructs, nat, nat3, bsz
+      integer, intent(in) :: at(nat)
+      real(wp), intent(in) :: pos(nat3 * nstructs)
+      real(wp), intent(out) :: energies(nstructs)
+      real(wp), intent(out) :: gradients(nat3 * nstructs)
+      integer, intent(out) :: iostat
+      integer :: offset, chunk, io2
+
+      iostat = 0
+      do offset = 1, nstructs, bsz
+        chunk = min(bsz, nstructs - offset + 1)
+
+        if (calc%calcs(1)%id == jobtype%pymlip) then
+          call pymlip_engrad_batch_f(calc%calcs(1), chunk, nat, at, &
+            pos((offset-1)*nat3+1), energies(offset), &
+            gradients((offset-1)*nat3+1), io2)
+        else if (calc%calcs(1)%id == jobtype%libtorch) then
+          call libtorch_engrad_batch_pipeline_f(calc%calcs(1), &
+            chunk, nat, at, pos((offset-1)*nat3+1), energies(offset), &
+            gradients((offset-1)*nat3+1), bsz, io2)
+        else
+          !> Fallback: serial engrad calls
+          block
+            type(coord) :: tmol
+            real(wp) :: egrd(3, nat)
+            integer :: ii
+            allocate(tmol%at(nat), tmol%xyz(3, nat))
+            tmol%nat = nat
+            tmol%at = at
+            io2 = 0
+            do ii = 1, chunk
+              tmol%xyz = reshape(pos((offset-1+ii-1)*nat3+1 : (offset-1+ii)*nat3), [3, nat])
+              call engrad(tmol, calc, energies(offset+ii-1), egrd, io2)
+              gradients((offset-1+ii-1)*nat3+1 : (offset-1+ii)*nat3) = reshape(egrd, [nat3])
+            end do
+            deallocate(tmol%at, tmol%xyz)
+          end block
+        end if
+
+        if (io2 /= 0) then
+          iostat = io2
+          return
+        end if
+      end do
+    end subroutine
+
+  end subroutine rfopt_batch
 
 !========================================================================================!
 !========================================================================================!
