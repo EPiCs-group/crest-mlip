@@ -24,6 +24,7 @@ endif
 
 srcs += files('ase_socket_bridge.c')
 srcs += files('process_bridge.c')
+srcs += files('worker_pool.c')
 
 srcs += files(
   'calculator_libtorch.F90',

@@ -640,6 +640,7 @@ subroutine crest_oloop(env,nat,nall,at,xyz,eread,dump,customcalc)
   use iomod,only:makedir,directory_exist,remove
   use crest_restartlog,only:trackrestart,restart_write_dummy
   use worker_io_module,only:write_worker_opt_config,read_worker_opt_results
+  use worker_pool_module
   implicit none
   type(systemdata),target,intent(inout) :: env
   real(wp),intent(inout) :: xyz(3,nat,nall)
@@ -717,8 +718,146 @@ subroutine crest_oloop(env,nat,nall,at,xyz,eread,dump,customcalc)
 
   if (use_process_parallel .and. T > 1 .and. nall > 1) then
 
-    write(stdout,'(/,1x,a)') 'Using process-based parallelism for MLIP optimization'
     call get_command_argument(0, progname)
+
+    !>--- Try persistent worker pool first (model already loaded from MD step)
+    if (.not. pool_is_active_f()) then
+      n_workers = min(T, nall)
+      write(stdout,'(/,1x,a,i0,a)') &
+        'Creating persistent worker pool with ', n_workers, ' workers'
+      call pool_create_f(n_workers, trim(progname), io)
+      if (io /= 0) then
+        write(stdout,'(a)') '  Pool creation failed, falling back to spawn/wait'
+        goto 300  !> fall through to legacy path
+      end if
+    end if
+
+    if (pool_is_active_f()) then
+      !> ============================================================
+      !> POOL OPTIMIZATION PATH: reuse persistent workers
+      !> ============================================================
+      n_workers = pool_get_n_workers_f()
+      chunk_size = (nall + n_workers - 1) / n_workers
+      n_workers = (nall + chunk_size - 1) / chunk_size
+
+      write(stdout,'(/,1x,a)') 'Using persistent worker pool for MLIP optimization'
+      write(stdout,'(1x,a,i0,a,i0,a,i0,a)') &
+        'Splitting ', nall, ' structures into ', n_workers, &
+        ' chunks (~', chunk_size, ' each)'
+
+      call print_opt_data(mycalc,stdout)
+      call profiler%init(1)
+      call profiler%start(1)
+
+      !>--- Write configs and send OPT tasks to pool workers
+      ex = directory_exist('OPTFILES')
+      if (.not.ex) exitstat = makedir('OPTFILES')
+
+      do i = 1, n_workers
+        idx_start = (i-1)*chunk_size + 1
+        idx_end = min(i*chunk_size, nall)
+        n_chunk = idx_end - idx_start + 1
+
+        worker_calc = mycalc
+        do j = 1, worker_calc%ncalculations
+          if (allocated(worker_calc%calcs(j)%calcspace)) then
+            ex = directory_exist(worker_calc%calcs(j)%calcspace)
+            if (.not.ex) exitstat = makedir(trim(worker_calc%calcs(j)%calcspace))
+            write(atmp,'(a,"_wopt",i0)') sep, i
+            worker_calc%calcs(j)%calcspace = &
+              mycalc%calcs(j)%calcspace // trim(atmp)
+          end if
+          worker_calc%calcs(j)%pymlip_handle = c_null_ptr
+          worker_calc%calcs(j)%libtorch_handle = c_null_ptr
+          worker_calc%calcs(j)%socket_handle = c_null_ptr
+        end do
+
+        write(config_file,'(a,a,i0,a)') 'OPTFILES', sep, i, '.bin'
+        call write_worker_opt_config(trim(config_file), nat, n_chunk, at, &
+                                      xyz(:,:,idx_start:idx_end), worker_calc, i)
+
+        call pool_send_task_f(i-1, POOL_TASK_OPT, trim(config_file), io)
+        if (io /= 0) then
+          write(stdout,'(a,i0)') '**WARNING** Failed to send OPT task to worker ', i
+        end if
+      end do
+
+      !>--- Wait for all workers and collect results
+      eread(:) = 0.0_wp
+      c = 0
+      n_failed = 0
+      do i = 1, n_workers
+        idx_start = (i-1)*chunk_size + 1
+        idx_end = min(i*chunk_size, nall)
+        n_chunk = idx_end - idx_start + 1
+
+        call pool_recv_result_f(i-1, exitstat, outfile, io)
+
+        if (io /= 0 .or. exitstat /= 0) then
+          write(stdout,'(a,i0,a)') '**WARNING** OPT task ', i, ' failed'
+          eread(idx_start:idx_end) = 1.0_wp
+          n_failed = n_failed + 1
+          cycle
+        end if
+
+        !>--- Read results from worker output file
+        allocate(e_chunk(n_chunk), opt_stat_chunk(n_chunk))
+        allocate(xyz_chunk(3, nat, n_chunk))
+        call read_worker_opt_results(trim(outfile), nat, n_chunk, &
+                                      xyz_chunk, e_chunk, opt_stat_chunk, io)
+        if (io == 0) then
+          do j = 1, n_chunk
+            k = idx_start + j - 1
+            eread(k) = e_chunk(j)
+            xyz(:,:,k) = xyz_chunk(:,:,j)
+            if (opt_stat_chunk(j) == 0) c = c + 1
+          end do
+        else
+          write(stdout,'(a,i0)') '**WARNING** Failed to read results from worker ', i
+          eread(idx_start:idx_end) = 1.0_wp
+          n_failed = n_failed + 1
+        end if
+        deallocate(e_chunk, opt_stat_chunk, xyz_chunk)
+      end do
+
+      call profiler%stop(1)
+
+      percent = float(c)/float(nall)*100.0_wp
+      write (atmp,'(f5.1,a)') percent,'% success)'
+      write (stdout,'(">",1x,i0,a,i0,a,a)') c,' of ',nall, &
+        ' structures successfully optimized (', trim(adjustl(atmp))
+      write (atmp,'(">",1x,a,i0,a)') 'Total runtime for ',nall, &
+        ' optimizations:'
+      call profiler%write_timing(stdout,1,trim(atmp),.true.)
+
+      if (dump) then
+        open (newunit=ich,file=ensemblefile)
+        open (newunit=ich2,file=ensembleelog)
+        do i = 1,nall
+          if (eread(i) < 0.5_wp .and. eread(i) /= 0.0_wp) then
+            write (ich,'(2x,i0)') nat
+            write (ich,'(2x,f25.15)') eread(i)
+            do j = 1,nat
+              write (ich,'(a2,3F24.14)') i2e(at(j),'nc'), &
+                xyz(1,j,i),xyz(2,j,i),xyz(3,j,i)
+            end do
+          end if
+        end do
+        close (ich)
+        close (ich2)
+      end if
+
+      call profiler%clear()
+      return
+
+    end if
+
+!==========================================================================!
+!> LEGACY SPAWN/WAIT OPTIMIZATION (fallback)
+!==========================================================================!
+300 continue
+
+    write(stdout,'(/,1x,a)') 'Using process-based parallelism for MLIP optimization'
 
     n_workers = min(T, nall)
     chunk_size = (nall + n_workers - 1) / n_workers  ! ceiling division
@@ -1170,6 +1309,7 @@ subroutine crest_search_multimd(env,mol,mddats,nsim)
   use omp_lib
   use crest_restartlog,only:trackrestart,restart_write_dummy
   use worker_io_module,only:write_worker_config
+  use worker_pool_module
   implicit none
   type(systemdata),intent(inout) :: env
   type(mddata) :: mddats(nsim)
@@ -1235,15 +1375,98 @@ subroutine crest_search_multimd(env,mol,mddats,nsim)
   nested = env%omp_allow_nested
 
 !==========================================================================!
-!> PROCESS-BASED PARALLEL PATH (pymlip — bypasses Python GIL)
+!> PERSISTENT WORKER POOL PATH (pymlip/libtorch GPU)
+!> Workers load the model once and accept multiple MD/OPT tasks.
 !==========================================================================!
   if (use_process_parallel .and. T > 1) then
 
+    !>--- Create pool if not already active (first use in this run)
+    call get_command_argument(0, progname)
+    if (.not. pool_is_active_f()) then
+      n_workers = min(T, nsim)
+      write(stdout,'(/,1x,a,i0,a)') &
+        'Creating persistent worker pool with ', n_workers, ' workers'
+      call pool_create_f(n_workers, trim(progname), io)
+      if (io /= 0) then
+        write(stdout,'(a)') '  Pool creation failed, falling back to spawn/wait'
+        goto 200  !> fall through to legacy spawn/wait path
+      end if
+    end if
+
+    if (pool_is_active_f()) then
+      !> ============================================================
+      !> POOL MD PATH: send tasks over pipes to persistent workers
+      !> ============================================================
+      n_workers = pool_get_n_workers_f()
+
+      write(stdout,'(1x,a,i0,a)') &
+        'Using persistent worker pool for ', nsim, ' MTDs'
+
+      !>--- Send MD tasks in batches of n_workers
+      n_failed = 0
+      do batch_start = 1, nsim, n_workers
+        batch_end = min(batch_start + n_workers - 1, nsim)
+        n_batch = batch_end - batch_start + 1
+
+        !>--- Write config files and send tasks to workers
+        do i = batch_start, batch_end
+          j = i - batch_start + 1  ! 1-based local index
+
+          !>--- prepare per-worker calculator with unique calcspace
+          worker_calc = env%calc
+          do io = 1, worker_calc%ncalculations
+            if (allocated(worker_calc%calcs(io)%calcspace)) then
+              ex = directory_exist(worker_calc%calcs(io)%calcspace)
+              if (.not.ex) exitstat = makedir(trim(worker_calc%calcs(io)%calcspace))
+              write(atmp,'(a,"_w",i0)') sep, i
+              worker_calc%calcs(io)%calcspace = &
+                env%calc%calcs(io)%calcspace // trim(atmp)
+            end if
+            worker_calc%calcs(io)%pymlip_handle = c_null_ptr
+            worker_calc%calcs(io)%libtorch_handle = c_null_ptr
+            worker_calc%calcs(io)%socket_handle = c_null_ptr
+          end do
+
+          write(config_file,'(a,a,a,i0,a)') mdir, sep, '.worker_', i, '.bin'
+          call write_worker_config(trim(config_file), mol, mddats(i), &
+                                   worker_calc, i)
+
+          call pool_send_task_f(j-1, POOL_TASK_MD, trim(config_file), io)
+          if (io /= 0) then
+            write(stdout,'(a,i0)') '**WARNING** Failed to send MD task ', i
+            n_failed = n_failed + 1
+          end if
+        end do
+
+        !>--- Wait for all workers in batch to finish
+        do i = batch_start, batch_end
+          j = i - batch_start + 1
+          call pool_recv_result_f(j-1, exitstat, config_file, io)
+          if (io /= 0 .or. exitstat /= 0) then
+            write(stdout,'(a,i0,a)') '**WARNING** MD task ', i, ' failed'
+            n_failed = n_failed + 1
+          else
+            write(stdout,'(1x,a,i0,a)') 'MTD ', i, ' completed successfully'
+          end if
+        end do
+      end do
+
+      if (n_failed > 0) then
+        write(stdout,'(/,a,i0,a)') '**WARNING** ', n_failed, ' MD task(s) failed'
+      end if
+
+      !>--- Collect trajectories (same as legacy path)
+      call collect(nsim, mddats)
+      return
+    end if
+
+!==========================================================================!
+!> LEGACY SPAWN/WAIT PATH (fallback if pool creation failed)
+!==========================================================================!
+200 continue
+
     write(stdout,'(/,1x,a)') 'Using process-based parallelism for MLIP (bypassing GIL/mutex)'
     write(stdout,'(1x,a,i0,a,i0,a)') 'Spawning up to ', T, ' worker processes for ', nsim, ' MTDs'
-
-    !>--- get path to this CREST binary for self-exec
-    call get_command_argument(0, progname)
 
     !>--- prepare per-worker calc with unique working directories
     n_workers = min(T, nsim)

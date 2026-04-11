@@ -31,6 +31,7 @@ endif()
 list(APPEND srcs
   "${dir}/ase_socket_bridge.c"
   "${dir}/process_bridge.c"
+  "${dir}/worker_pool.c"
 )
 
 list(APPEND srcs

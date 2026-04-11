@@ -36,6 +36,7 @@ list(APPEND srcs
   "${dir}/parallel.f90"
   "${dir}/worker_io.f90"
   "${dir}/worker_md.f90"
+  "${dir}/worker_pool_mod.f90"
 )
 
 set(srcs ${srcs} PARENT_SCOPE)

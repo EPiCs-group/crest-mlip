@@ -57,6 +57,7 @@ subroutine custom_cleanup(env)
    use crest_data
    use iomod
    use crest_calculator, only: pymlip_finalize, mlip_cleanup_all
+   use worker_pool_module, only: pool_is_active_f, pool_destroy_f
    implicit none
    type(systemdata) :: env
    integer :: i
@@ -80,6 +81,10 @@ subroutine custom_cleanup(env)
    endif
    call rmrf('.CHRG .UHF')
    call rmrf('.history.xyz')
+   !> Shut down persistent worker pool if active (sends SHUTDOWN to all workers)
+   if (pool_is_active_f()) then
+     call pool_destroy_f(i)
+   end if
    !> Final MLIP cleanup: force-release all handles even if mlip_keep_loaded
    !> was set (we're exiting the program now).
    env%calc%mlip_keep_loaded = .false.

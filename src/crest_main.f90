@@ -25,7 +25,8 @@ program CREST
   use crest_parameters !> Datatypes and constants
   use crest_data !> module for the main data storage (imports systemdata and timer)
   use crest_restartlog
-  use worker_md_module, only: crest_worker_run, crest_worker_opt_run
+  use worker_md_module, only: crest_worker_run, crest_worker_opt_run, &
+                               crest_worker_pool_run
     USE, INTRINSIC :: IEEE_EXCEPTIONS
   implicit none
   type(systemdata) :: env  !> MAIN STORAGE OF SYSTEM DATA
@@ -75,6 +76,18 @@ program CREST
       deallocate(arg)
       call crest_worker_opt_run(env)
       stop
+    end if
+    if (trim(arg(i)) == '--worker-pool' .or. trim(arg(i)) == '-worker-pool') then
+      block
+        integer :: pool_fd_r, pool_fd_w, pool_idx
+        pool_fd_r = 0; pool_fd_w = 0; pool_idx = 0
+        if (args >= i+1) read(arg(i+1), *, iostat=io) pool_fd_r
+        if (args >= i+2) read(arg(i+2), *, iostat=io) pool_fd_w
+        if (args >= i+3) read(arg(i+3), *, iostat=io) pool_idx
+        deallocate(arg)
+        call crest_worker_pool_run(env, pool_fd_r, pool_fd_w, pool_idx)
+        stop
+      end block
     end if
   end do
 

@@ -34,4 +34,5 @@ srcs += files(
   'parallel.f90',
   'worker_io.f90',
   'worker_md.f90',
+  'worker_pool_mod.f90',
 )
