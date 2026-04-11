@@ -510,7 +510,7 @@ contains  !> MODULE PROCEDURES START HERE
     integer, intent(in) :: nall, nat
     integer, intent(in) :: at(nat)
     real(wp), intent(inout) :: xyz_all(3, nat, nall)
-    type(calcdata), intent(in) :: calc
+    type(calcdata), intent(inout) :: calc
     real(wp), intent(out) :: energies_out(nall)
     integer, intent(out) :: status_out(nall)
     logical, intent(in) :: pr
@@ -549,12 +549,9 @@ contains  !> MODULE PROCEDURES START HERE
     logical :: econverged, gconverged, lowered
     integer :: gpu_batch_sz
 
-    !> Per-thread RF workspace (allocated once, indexed by thread)
-    integer :: nthreads, tid
-    real(sp), allocatable :: Aaug_t(:,:)   ! (npvar1, nthreads)
-    real(sp), allocatable :: Uaug_t(:,:)   ! (nvar1, nthreads)
-    real(sp), allocatable :: eaug_t(:,:)   ! (nvar1, nthreads)
-    real(sp), parameter :: r4dum = 1.e-8
+    !> Thread count (workspace allocated inside OMP parallel region)
+    integer :: nthreads
+    real(sp), parameter :: r4dum = 1.e-8_sp
 
     !> BLAS externals
     real(wp), external :: ddot
@@ -611,12 +608,8 @@ contains  !> MODULE PROCEDURES START HERE
       amap(i) = i
     end do
 
-    !> Allocate per-thread RF workspace
     nthreads = 1
     !$ nthreads = omp_get_max_threads()
-    allocate(Aaug_t(npvar1, nthreads), source=0.0_sp)
-    allocate(Uaug_t(nvar1, nthreads), source=0.0_sp)
-    allocate(eaug_t(nvar1, nthreads), source=0.0_sp)
 
     if (pr) then
       write(stdout, '(/,1x,a,i0,a)') &
@@ -678,14 +671,12 @@ contains  !> MODULE PROCEDURES START HERE
 
       !>--- Per-structure CPU work: Hessian update + RF solve + coordinate step
       !>    (before the engrad call — we update coords first, then evaluate)
-      !$omp parallel do default(none) &
+      !$omp parallel do default(none) schedule(dynamic) &
       !$omp shared(nactive, amap, nat3, npvar, nvar1, npvar1, &
       !$omp        hess, grd, gold, displ, xyz, gnorm, energy, eold, &
       !$omp        siter, sstatus, iupdat, exact, maxdispl, ethr, gthr) &
-      !$omp private(ia, ig, echng, alp, depred, maxd, dsnrm, gnrm, tid, &
-      !$omp         econverged, gconverged, lowered, i, k) &
-      !$omp firstprivate(r4dum) &
-      !$omp shared(Aaug_t, Uaug_t, eaug_t)
+      !$omp private(ia, ig, echng, alp, maxd, dsnrm, gnrm, &
+      !$omp         econverged, gconverged, lowered)
       do ia = 1, nactive
         ig = amap(ia)
         if (sstatus(ig) /= 0) cycle
@@ -730,47 +721,54 @@ contains  !> MODULE PROCEDURES START HERE
         if (gnrm < 0.0003_wp) alp = 3.0d-1
 
         !> Solve RF eigenvalue problem (thread-local workspace)
-        tid = 1
-        !$ tid = omp_get_thread_num() + 1
-
-        !> Build augmented Hessian
-        Aaug_t(1:npvar, tid) = real(hess(1:npvar, ig), sp)
-        Aaug_t(npvar+1:npvar1-1, tid) = real(grd(1:nat3, ig), sp)
-        Aaug_t(npvar1, tid) = 0.0_sp
-
-        !> Steepest descent guess for first iteration
-        if (siter(ig) == 1) then
-          Uaug_t(1:nat3, tid) = -real(grd(1:nat3, ig), sp)
-          Uaug_t(nvar1, tid) = 1.0_sp
-          dsnrm = sqrt(sdot(nvar1, Uaug_t(1,tid), 1, Uaug_t(1,tid), 1))
-          if (dsnrm > 0.0_sp) Uaug_t(:, tid) = Uaug_t(:, tid) / real(dsnrm, sp)
-        end if
-
-        !> Solve (use exact solver for small systems, Davidson otherwise)
         block
+          real(sp), allocatable :: Aaug(:), Uaug(:,:), eaug(:)
           logical :: rf_fail
+
+          allocate(Aaug(npvar1), Uaug(nvar1, 1), eaug(nvar1))
           rf_fail = .false.
-          if (exact .or. nvar1 < 50) then
-            call solver_sspevx(nvar1, r4dum, Aaug_t(1,tid), &
-                               Uaug_t(1,tid), eaug_t(1,tid), rf_fail)
+
+          !> Build augmented Hessian [H g; g 0] in packed format
+          Aaug(1:npvar) = real(hess(1:npvar, ig), sp)
+          Aaug(npvar+1:npvar1-1) = real(grd(1:nat3, ig), sp)
+          Aaug(npvar1) = 0.0_sp
+
+          !> Steepest descent guess for first iteration
+          if (siter(ig) == 1) then
+            Uaug(1:nat3, 1) = -real(grd(1:nat3, ig), sp)
+            Uaug(nvar1, 1) = 1.0_sp
+            dsnrm = sqrt(sdot(nvar1, Uaug(1,1), 1, Uaug(1,1), 1))
+            if (dsnrm > 0.0_sp) Uaug(:,1) = Uaug(:,1) / real(dsnrm, sp)
           else
-            call solver_sdavidson(nvar1, r4dum, Aaug_t(1,tid), &
-                                  Uaug_t(1,tid), eaug_t(1,tid), rf_fail, .false.)
+            !> Use previous displacement as guess for Davidson
+            Uaug(1:nat3, 1) = real(displ(1:nat3, ig), sp)
+            Uaug(nvar1, 1) = 1.0_sp
+            dsnrm = sqrt(sdot(nvar1, Uaug(1,1), 1, Uaug(1,1), 1))
+            if (dsnrm > 0.0_sp) Uaug(:,1) = Uaug(:,1) / real(dsnrm, sp)
+          end if
+
+          !> Solve
+          if (exact .or. nvar1 < 50) then
+            call solver_sspevx(nvar1, r4dum, Aaug, Uaug, eaug, rf_fail)
+          else
+            call solver_sdavidson(nvar1, r4dum, Aaug, Uaug, eaug, &
+                                  rf_fail, .false.)
             if (rf_fail) then
-              call solver_sspevx(nvar1, r4dum, Aaug_t(1,tid), &
-                                 Uaug_t(1,tid), eaug_t(1,tid), rf_fail)
+              call solver_sspevx(nvar1, r4dum, Aaug, Uaug, eaug, rf_fail)
             end if
           end if
 
-          if (rf_fail .or. abs(Uaug_t(nvar1, tid)) < 1.e-10) then
+          if (rf_fail .or. abs(Uaug(nvar1, 1)) < 1.e-10) then
             sstatus(ig) = -1
+            deallocate(Aaug, Uaug, eaug)
             cycle
           end if
-        end block
 
-        !> Extract displacement from eigenvector
-        displ(1:nat3, ig) = real(Uaug_t(1:nat3, tid), wp) / &
-                             real(Uaug_t(nvar1, tid), wp)
+          !> Extract displacement
+          displ(1:nat3, ig) = real(Uaug(1:nat3, 1), wp) / &
+                               real(Uaug(nvar1, 1), wp)
+          deallocate(Aaug, Uaug, eaug)
+        end block
 
         !> Rescale if too large
         maxd = alp * sqrt(ddot(nat3, displ(1,ig), 1, displ(1,ig), 1))
@@ -878,14 +876,13 @@ contains  !> MODULE PROCEDURES START HERE
     !> Cleanup
     deallocate(xyz, grd, gold, displ, hess)
     deallocate(energy, eold, gnorm, gnold, siter, sstatus, amap)
-    deallocate(Aaug_t, Uaug_t, eaug_t)
 
   contains
 
     !> Sub-batched engrad dispatch: handles GPU batch size limits
     subroutine batch_engrad_sub(calc, nstructs, nat, nat3, at, &
                                 pos, energies, gradients, bsz, iostat)
-      type(calcdata), intent(in) :: calc
+      type(calcdata), intent(inout) :: calc
       integer, intent(in) :: nstructs, nat, nat3, bsz
       integer, intent(in) :: at(nat)
       real(wp), intent(in) :: pos(nat3 * nstructs)
