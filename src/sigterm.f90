@@ -20,8 +20,11 @@
 subroutine creststop(io)
   use crest_parameters
   use crest_data
+  use worker_pool_module, only: pool_is_active_f, pool_destroy_f
+  use crest_calculator, only: pymlip_finalize
   implicit none
   integer,intent(in) :: io
+  integer :: pool_io
 
   select case(io)
   case (status_normal)
@@ -43,6 +46,10 @@ subroutine creststop(io)
   case ( status_safety )
     write (stdout,*) 'Safety termination of CREST.'
   end select
+  !> Destroy worker pool and finalize Python before exit to prevent
+  !> segfault in _dl_fini (shared libraries unloaded while still referenced)
+  if (pool_is_active_f()) call pool_destroy_f(pool_io)
+  call pymlip_finalize()
   call exit(io)
 
 end subroutine creststop
@@ -55,10 +62,14 @@ subroutine wsigint !> Ctrl+C
   use crest_parameters,only:stderr,stdout
   use crest_restartlog,only:dump_restart
   use ConfSolv_module
+  use worker_pool_module, only: pool_is_active_f, pool_destroy_f
+  use crest_calculator, only: pymlip_finalize
   integer :: myunit,io
   write (*,*)
   write (stderr,'(" recieved SIGINT, trying to terminate CREST...")')
   !call dump_restart()
+  if (pool_is_active_f()) call pool_destroy_f(io)
+  call pymlip_finalize()
   call cs_shutdown(io)
   call exit(130)
   error stop
@@ -68,10 +79,14 @@ subroutine wsigquit !> Ctrl+D or Ctrl+\
   use crest_parameters,only:stderr,stdout
   use crest_restartlog,only:dump_restart
   use ConfSolv_module
+  use worker_pool_module, only: pool_is_active_f, pool_destroy_f
+  use crest_calculator, only: pymlip_finalize
   integer :: myunit,io
   write (*,*)
   write (stderr,'(" recieved SIGQUIT, trying to terminate CREST...")')
   !call dump_restart()
+  if (pool_is_active_f()) call pool_destroy_f(io)
+  call pymlip_finalize()
   call cs_shutdown(io)
   call exit(131)
   error stop
@@ -81,10 +96,14 @@ subroutine wsigterm !> Recieved by the "kill" pid command
   use crest_parameters,only:stderr,stdout
   use crest_restartlog,only:dump_restart
   use ConfSolv_module
+  use worker_pool_module, only: pool_is_active_f, pool_destroy_f
+  use crest_calculator, only: pymlip_finalize
   integer :: io
   write (stdout,*)
   write (stderr,'(" recieved SIGTERM, trying to terminate CREST...")')
   !call dump_restart()
+  if (pool_is_active_f()) call pool_destroy_f(io)
+  call pymlip_finalize()
   call cs_shutdown(io)
   call exit(143)
   error stop
@@ -94,8 +113,12 @@ subroutine wsigkill
   use crest_parameters,only:stderr,stdout
   use crest_restartlog,only:dump_restart
   use ConfSolv_module
+  use worker_pool_module, only: pool_is_active_f, pool_destroy_f
+  use crest_calculator, only: pymlip_finalize
   integer :: io
   !call dump_restart()
+  if (pool_is_active_f()) call pool_destroy_f(io)
+  call pymlip_finalize()
   call cs_shutdown(io)
   call exit(137)
   error stop 'CREST recieved SIGKILL.'
